@@ -138,15 +138,58 @@ def patch_app_version(path: Path) -> None:
     path.write_text(text, encoding="utf-8")
 
 
+def _replace_java_method(path: Path, method_pattern: str, replacement: str, label: str) -> None:
+    """Replace one Java method using balanced braces, not brittle full-text matching."""
+    text = path.read_text(encoding="utf-8")
+    match = re.search(method_pattern, text, re.MULTILINE)
+    if not match:
+        raise RuntimeError(f"Could not locate {label} in {path}")
+
+    open_brace = text.find("{", match.start())
+    if open_brace < 0:
+        raise RuntimeError(f"Could not locate method body for {label} in {path}")
+
+    depth = 0
+    in_string = False
+    in_char = False
+    escaped = False
+    i = open_brace
+    while i < len(text):
+        ch = text[i]
+        if in_string or in_char:
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif in_string and ch == '"':
+                in_string = False
+            elif in_char and ch == "'":
+                in_char = False
+        else:
+            if ch == '"':
+                in_string = True
+            elif ch == "'":
+                in_char = True
+            elif ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    text = text[:match.start()] + replacement + text[i + 1:]
+                    path.write_text(text, encoding="utf-8")
+                    return
+        i += 1
+    raise RuntimeError(f"Unbalanced braces while replacing {label} in {path}")
+
+
 def patch_main_activity(path: Path) -> None:
-    replace_once(path,
-'''            boolean showShortcutsFirst = preferences.getBoolean("show_shortcuts_first", false);
-            int selectedMenuItemId = intent.getIntExtra("selected_menu_item_id", 0);
-            int menuItemId = selectedMenuItemId > 0 ? selectedMenuItemId : (showShortcutsFirst ? R.id.menu_item_shortcuts : R.id.menu_item_containers);
-            actionBar.setHomeAsUpIndicator(R.drawable.icon_action_bar_menu);
-            onNavigationItemSelected(navigationView.getMenu().findItem(menuItemId));
-            navigationView.setCheckedItem(menuItemId);''',
-'''            int selectedMenuItemId = intent.getIntExtra("selected_menu_item_id", 0);
+    text = path.read_text(encoding="utf-8")
+
+    # Launch MR Games Home by default, while preserving explicit navigation
+    # requests passed by the upstream app (e.g. opening the input-controls editor).
+    home_selection = "navigationView.setCheckedItem(R.id.menu_item_mr_games_home);"
+    if home_selection not in text:
+        new_block = '''            int selectedMenuItemId = intent.getIntExtra("selected_menu_item_id", 0);
             actionBar.setHomeAsUpIndicator(R.drawable.icon_action_bar_menu);
             if (selectedMenuItemId > 0) {
                 onNavigationItemSelected(navigationView.getMenu().findItem(selectedMenuItemId));
@@ -155,31 +198,58 @@ def patch_main_activity(path: Path) -> None:
             else {
                 showFragment(new MRGamesHomeFragment());
                 navigationView.setCheckedItem(R.id.menu_item_mr_games_home);
-            }''', "launch MR Games home by default")
+            }'''
+        # Match the current preference-based startup block independent of spacing.
+        pattern = re.compile(
+            r'(?ms)^(?P<indent>[ \t]*)boolean\s+showShortcutsFirst\s*=.*?'
+            r'^(?P=indent)navigationView\.setCheckedItem\(menuItemId\);'
+        )
+        updated, count = pattern.subn(
+            lambda m: new_block.replace("            ", m.group("indent")), text, count=1
+        )
 
-    replace_once(path,
-'''        switch (item.getItemId()) {
-            case R.id.menu_item_shortcuts:''',
-'''        switch (item.getItemId()) {
-            case R.id.menu_item_mr_games_home:
-                showFragment(new MRGamesHomeFragment());
-                break;
-            case R.id.menu_item_shortcuts:''', "home navigation item")
+        # Fallback for upstream revisions which refactor the preference setup but
+        # retain the two navigation calls and selectedMenuItemId variable.
+        if count == 0:
+            fallback = re.compile(
+                r'(?m)^(?P<indent>[ \t]*)onNavigationItemSelected\('
+                r'navigationView\.getMenu\(\)\.findItem\(menuItemId\)\);\s*\n'
+                r'(?P=indent)navigationView\.setCheckedItem\(menuItemId\);'
+            )
+            updated, count = fallback.subn(
+                lambda m: new_block.replace("            ", m.group("indent")), text, count=1
+            )
 
-    replace_once(path,
-'''    public void onBackPressed() {
-        if (currentFragment != null && currentFragment.isVisible()) {
-            if (currentFragment instanceof BaseFileManagerFragment) {
-                BaseFileManagerFragment fileManagerFragment = (BaseFileManagerFragment)currentFragment;
-                if (fileManagerFragment.onBackPressed()) return;
-            }
-            else if (currentFragment instanceof ContainersFragment) {
-                finish();
-            }
-        }
-        showFragment(new ContainersFragment());
-    }''',
-'''    public void onBackPressed() {
+        if count != 1:
+            raise RuntimeError(
+                f"Could not identify Winlator's startup navigation block in {path}. "
+                "Upstream MainActivity.java has changed; no files were silently modified."
+            )
+        path.write_text(updated, encoding="utf-8")
+        text = updated
+
+    # Add the MR Games Home route to the existing navigation switch.
+    if "case R.id.menu_item_mr_games_home:" not in text:
+        case_pattern = re.compile(r'(?m)^(?P<indent>[ \t]*)case R\.id\.menu_item_shortcuts:')
+        text, count = case_pattern.subn(
+            lambda m: (
+                f'{m.group("indent")}case R.id.menu_item_mr_games_home:\n'
+                f'{m.group("indent")}    showFragment(new MRGamesHomeFragment());\n'
+                f'{m.group("indent")}    break;\n'
+                f'{m.group("indent")}case R.id.menu_item_shortcuts:'
+            ),
+            text,
+            count=1,
+        )
+        if count != 1:
+            raise RuntimeError(f"Could not find the shortcuts navigation case in {path}")
+        path.write_text(text, encoding="utf-8")
+
+    # The balanced-brace replacement survives harmless upstream formatting changes.
+    _replace_java_method(
+        path,
+        r'(?m)^(?P<indent>[ \t]*)public\s+void\s+onBackPressed\s*\(\s*\)\s*\{',
+        '''    public void onBackPressed() {
         if (currentFragment != null && currentFragment.isVisible()) {
             if (currentFragment instanceof BaseFileManagerFragment) {
                 BaseFileManagerFragment fileManagerFragment = (BaseFileManagerFragment)currentFragment;
@@ -195,8 +265,9 @@ def patch_main_activity(path: Path) -> None:
             }
         }
         showFragment(new MRGamesHomeFragment());
-    }''', "back navigation to MR Games home while preserving container editor")
-
+    }''',
+        "MainActivity.onBackPressed()",
+    )
 
 def patch_menu(path: Path) -> None:
     text = path.read_text(encoding="utf-8")
