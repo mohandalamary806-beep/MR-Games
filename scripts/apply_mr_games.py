@@ -327,6 +327,77 @@ def patch_container_defaults(java_dir: Path) -> None:
         "use MR Games default Box64 profile for new containers")
 
 
+def verify_gamepad_shortcut_support(java_dir: Path) -> None:
+    """Verify the real Winlator shortcut/profile APIs without assuming a hardcoded field.
+
+    Shortcut stores arbitrary [Extra Data] keys in a JSONObject. The
+    `controlsProfile` key is therefore intentionally NOT declared in
+    Shortcut.java; XServerDisplayActivity reads that key through getExtra().
+    """
+    shortcut_source = (java_dir / "container/Shortcut.java").read_text(encoding="utf-8")
+    display_source = (java_dir / "XServerDisplayActivity.java").read_text(encoding="utf-8")
+    controls_source = (java_dir / "inputcontrols/InputControlsManager.java").read_text(encoding="utf-8")
+    profile_source = (java_dir / "inputcontrols/ControlsProfile.java").read_text(encoding="utf-8")
+    element_source = (java_dir / "inputcontrols/ControlElement.java").read_text(encoding="utf-8")
+    binding_source = (java_dir / "inputcontrols/Binding.java").read_text(encoding="utf-8")
+    manager_source = (java_dir / "container/ContainerManager.java").read_text(encoding="utf-8")
+
+    # Shortcut's [Extra Data] is a generic key/value store, not a fixed schema.
+    shortcut_support = all((
+        re.search(r'JSONObject\s+extraData\s*=\s*new\s+JSONObject\s*\(', shortcut_source),
+        re.search(r'section\.equals\(\"Extra Data\"\)', shortcut_source),
+        re.search(r'extraData\.put\(key\s*,\s*value\)', shortcut_source),
+        re.search(r'public\s+String\s+getExtra\(String\s+name', shortcut_source),
+    ))
+    if not shortcut_support:
+        raise RuntimeError(
+            "Winlator Shortcut no longer supports generic [Extra Data] key/value metadata; "
+            "cannot attach a per-game controls profile safely"
+        )
+
+    launch_support = all((
+        re.search(r'shortcut\s*\.\s*getExtra\(\s*\"controlsProfile\"\s*\)', display_source),
+        re.search(r'inputControlsManager\s*\.\s*getProfile\(', display_source),
+        "showInputControls(profile)" in display_source,
+    ))
+    if not launch_support:
+        raise RuntimeError(
+            "Winlator no longer loads a shortcut's controlsProfile in XServerDisplayActivity"
+        )
+
+    profile_support = all((
+        re.search(r'public\s+ControlsProfile\s+createProfile\(String\s+name\)', controls_source),
+        re.search(r'public\s+ControlsProfile\s+getProfile\(int\s+id\)', controls_source),
+        re.search(r'public\s+ArrayList<ControlsProfile>\s+getProfiles\(boolean', controls_source),
+        "getJSONArray(\"elements\")" in profile_source,
+        "Binding.fromString" in profile_source,
+        "ControlElement.Type.valueOf" in profile_source,
+        "ControlElement.Shape.valueOf" in profile_source,
+        "getBindingCount" in element_source,
+        "public JSONObject toJSONObject()" in element_source,
+    ))
+    if not profile_support:
+        raise RuntimeError(
+            "Winlator input-controls profile API or .icp element format changed; "
+            "cannot create the MR PlayStation profile safely"
+        )
+
+    required_gamepad_bindings = (
+        "GAMEPAD_DPAD_UP", "GAMEPAD_DPAD_RIGHT", "GAMEPAD_DPAD_DOWN", "GAMEPAD_DPAD_LEFT",
+        "GAMEPAD_LEFT_THUMB_UP", "GAMEPAD_LEFT_THUMB_RIGHT", "GAMEPAD_LEFT_THUMB_DOWN", "GAMEPAD_LEFT_THUMB_LEFT",
+        "GAMEPAD_RIGHT_THUMB_UP", "GAMEPAD_RIGHT_THUMB_RIGHT", "GAMEPAD_RIGHT_THUMB_DOWN", "GAMEPAD_RIGHT_THUMB_LEFT",
+        "GAMEPAD_BUTTON_A", "GAMEPAD_BUTTON_B", "GAMEPAD_BUTTON_X", "GAMEPAD_BUTTON_Y",
+        "GAMEPAD_BUTTON_L1", "GAMEPAD_BUTTON_L2", "GAMEPAD_BUTTON_R1", "GAMEPAD_BUTTON_R2",
+        "GAMEPAD_BUTTON_L3", "GAMEPAD_BUTTON_R3", "GAMEPAD_BUTTON_SELECT", "GAMEPAD_BUTTON_START",
+    )
+    missing_bindings = [name for name in required_gamepad_bindings if name not in binding_source]
+    if missing_bindings:
+        raise RuntimeError("Winlator gamepad bindings missing: " + ", ".join(missing_bindings))
+
+    if not re.search(r'public\s+ArrayList<Shortcut>\s+loadShortcuts\(Shortcut\s+selectedFolder\)', manager_source):
+        raise RuntimeError("Winlator shortcut library API changed; cannot verify game-library indexing")
+
+
 def apply(source: Path, icon: Path, payload_dir: Path) -> None:
     app = source / "app"
     java = app / "src/main/java/com/winlator"
@@ -335,6 +406,7 @@ def apply(source: Path, icon: Path, payload_dir: Path) -> None:
                 java / "ContainerDetailFragment.java", java / "container/ContainerManager.java",
                 java / "container/Container.java", java / "container/Shortcut.java",
                 java / "inputcontrols/InputControlsManager.java", java / "inputcontrols/ControlsProfile.java",
+                java / "inputcontrols/Binding.java", java / "inputcontrols/ControlElement.java",
                 java / "XServerDisplayActivity.java", java / "core/AppUtils.java", java / "core/FileUtils.java",
                 java / "core/StringUtils.java", java / "core/WineUtils.java", java / "box64/Box64Preset.java",
                 java / "box64/Box64PresetManager.java", res / "values/styles.xml",
@@ -352,20 +424,10 @@ def apply(source: Path, icon: Path, payload_dir: Path) -> None:
     patch_box64(java)
     patch_container_defaults(java)
 
-    # Stop the build if the upstream revision no longer has the native gamepad
-    # profile / shortcut launch hooks used by MRGameLibrary.
-    shortcut_source = (java / "container/Shortcut.java").read_text(encoding="utf-8")
-    display_source = (java / "XServerDisplayActivity.java").read_text(encoding="utf-8")
-    controls_source = (java / "inputcontrols/InputControlsManager.java").read_text(encoding="utf-8")
-    manager_source = (java / "container/ContainerManager.java").read_text(encoding="utf-8")
-    for marker, source_text, label in [
-        ("controlsProfile", shortcut_source, "shortcut control profile metadata"),
-        ("shortcut.getExtra(\"controlsProfile\")", display_source, "automatic touchscreen profile loading"),
-        ("createProfile(String name)", controls_source, "native controls profile creation"),
-        ("loadShortcuts(Shortcut selectedFolder)", manager_source, "native game library shortcut indexing"),
-    ]:
-        if marker not in source_text:
-            raise RuntimeError(f"Upstream Winlator no longer exposes {label}; refusing an incomplete build")
+    # Validate the actual generic [Extra Data] contract and native profile loader.
+    # `controlsProfile` is stored as a generic key, so it is not expected to be
+    # mentioned in Shortcut.java itself.
+    verify_gamepad_shortcut_support(java)
 
     manifest = (app / "src/main/AndroidManifest.xml").read_text(encoding="utf-8")
     if 'android:name="com.winlator.MainActivity"' not in manifest:
