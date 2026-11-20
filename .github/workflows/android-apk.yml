@@ -1,0 +1,96 @@
+name: Build MR Games Windows Engine APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main, master ]
+    paths:
+      - '.github/workflows/android-apk.yml'
+      - 'scripts/**'
+      - 'branding/**'
+      - 'README_AR.md'
+      - 'UPSTREAM_LICENSES.md'
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build MR Games (Game Hub + Wine + Box64)
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+
+    steps:
+      - name: Checkout MR Games customizations
+        uses: actions/checkout@v4
+
+      - name: Verify required MR Games files
+        run: |
+          test -f scripts/apply_mr_games.py
+          test -f scripts/MRGamesHomeFragment.java
+          test -f scripts/MRGamePerformance.java
+          test -f scripts/MRGameLibrary.java
+          test -f branding/MR_Games_Icon.png
+          echo "MR Games patch files found."
+
+      - name: Checkout Winlator engine source
+        run: |
+          git clone --depth 1 https://github.com/brunodev85/winlator-app.git engine-src
+          git -C engine-src submodule update --init --recursive
+          echo "UPSTREAM_COMMIT=$(git -C engine-src rev-parse HEAD)" >> "$GITHUB_ENV"
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android SDK, NDK and CMake
+        run: |
+          sdkmanager --install \
+            "platforms;android-35" \
+            "build-tools;35.0.0" \
+            "ndk;24.0.8215888" \
+            "cmake;3.22.1"
+
+      - name: Install branding script dependency
+        run: python3 -m pip install --quiet Pillow
+
+      - name: Apply MR Games launcher, device profiles and branding
+        run: |
+          python3 scripts/apply_mr_games.py \
+            --source engine-src \
+            --icon branding/MR_Games_Icon.png \
+            --payload scripts
+
+      - name: Build Android APK
+        working-directory: engine-src
+        run: |
+          chmod +x ./gradlew
+          ./gradlew --no-daemon --stacktrace assembleDebug
+
+      - name: Prepare release bundle and LGPL source patch
+        run: |
+          mkdir -p release-bundle
+          cp engine-src/app/build/outputs/apk/debug/app-debug.apk release-bundle/MR-Games-debug.apk
+          cp engine-src/LICENSE release-bundle/UPSTREAM-WINLATOR-LICENSE.txt
+          cp scripts/apply_mr_games.py release-bundle/
+          cp scripts/MRGamesHomeFragment.java release-bundle/
+          cp scripts/MRGamePerformance.java release-bundle/
+          cp scripts/MRGameLibrary.java release-bundle/
+          cp branding/MR_Games_Icon.png release-bundle/
+          cp branding/MR_Games_UI_Concept.png release-bundle/
+          git -C engine-src add -N app/src/main
+          git -C engine-src diff --binary > release-bundle/MR-Games-source-changes.patch
+          printf 'Upstream repository: https://github.com/brunodev85/winlator-app\nUpstream commit: %s\nLauncher: MR Games Home + existing native game shortcuts\nWindows Desktop: existing Winlator containers and file manager\nDevice profiles: RAM/CPU/Vulkan heuristic for new containers\nPer-game settings: native Shortcut Settings (screen size, Box64, driver, DX wrapper, controls)\nAdd Game: Android EXE picker creates a native per-container shortcut\nTouch controls: per-game MR PlayStation profile (D-pad, dual sticks, face/shoulder buttons)\nLimit: a single-file EXE picker cannot import adjacent game DLL/data files automatically\n' "$UPSTREAM_COMMIT" > release-bundle/BUILD-INFO.txt
+
+      - name: Upload MR Games APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: MR-Games-Windows-Engine-APK
+          path: release-bundle/*
+          if-no-files-found: error
+          retention-days: 14
