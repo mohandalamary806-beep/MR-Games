@@ -2,12 +2,15 @@ package com.winlator;
 
 import android.app.Activity;
 import android.content.ContentResolver;
+import android.content.Context;
 import android.content.Intent;
 import android.database.Cursor;
 import android.net.Uri;
 import android.os.Handler;
 import android.os.Looper;
 import android.provider.OpenableColumns;
+
+import androidx.preference.PreferenceManager;
 
 import com.winlator.container.Container;
 import com.winlator.container.ContainerManager;
@@ -184,43 +187,82 @@ public final class MRGameLibrary {
         InputControlsManager controlsManager = new InputControlsManager(activity);
         String profileName = PROFILE_PREFIX + gameTitle;
         ArrayList<ControlsProfile> profiles = controlsManager.getProfiles(false);
-        for (ControlsProfile profile : profiles) {
-            if (profileName.equals(profile.getName())) return profile.id;
+        ControlsProfile profile = null;
+        for (ControlsProfile candidate : profiles) {
+            if (profileName.equals(candidate.getName())) {
+                profile = candidate;
+                break;
+            }
         }
+        if (profile == null) profile = controlsManager.createProfile(profileName);
+        prepareProfileForLaunch(activity, profile);
+        return profile.id;
+    }
 
-        ControlsProfile profile = controlsManager.createProfile(profileName);
+    /** One-time migration for old MR layouts; already-customized v2 profiles are preserved. */
+    public static void prepareProfileForLaunch(Context context, ControlsProfile profile) {
+        if (context == null || profile == null || profile.getName() == null || !profile.getName().startsWith(PROFILE_PREFIX)) return;
+
+        // MR PlayStation controls must leave the normal mouse path available for Windows dialogs.
+        profile.setDisableMouseInput(false);
+        profile.setHideMouseCursor(false);
+
+        String migrationKey = "mr_games_ps_layout_v2_" + profile.id;
+        android.content.SharedPreferences preferences = PreferenceManager.getDefaultSharedPreferences(context);
+        if (preferences.getBoolean(migrationKey, false)) return;
+
+        try {
+            writePlayStationLayout(context, profile);
+            preferences.edit().putBoolean(migrationKey, true).apply();
+        }
+        catch (Exception ignored) {
+            // Keep the profile usable even if migration storage fails; the cursor flags above still apply.
+        }
+    }
+
+    private static void writePlayStationLayout(Context context, ControlsProfile profile) throws JSONException {
+        File profileFile = ControlsProfile.getProfileFile(context, profile.id);
         JSONObject data = new JSONObject();
         data.put("id", profile.id);
-        data.put("name", profileName);
+        data.put("name", profile.getName());
         data.put("cursorSpeed", 1.0);
-        data.put("disableMouseInput", true);
-        data.put("hideMouseCursor", true);
+        data.put("disableMouseInput", false);
+        data.put("hideMouseCursor", false);
         JSONArray elements = new JSONArray();
 
-        // Left-side movement controls.
-        elements.put(element("D_PAD", "CIRCLE", 0.12, 0.67, 1.18, "", "GAMEPAD_DPAD_UP", "GAMEPAD_DPAD_RIGHT", "GAMEPAD_DPAD_DOWN", "GAMEPAD_DPAD_LEFT"));
-        elements.put(element("STICK", "CIRCLE", 0.29, 0.82, 1.18, "", "GAMEPAD_LEFT_THUMB_UP", "GAMEPAD_LEFT_THUMB_RIGHT", "GAMEPAD_LEFT_THUMB_DOWN", "GAMEPAD_LEFT_THUMB_LEFT"));
+        // Left movement cluster. Controls stay at the screen edges, leaving the center clear.
+        elements.put(element("D_PAD", "CIRCLE", 0.13, 0.72, 0.90, "", "GAMEPAD_DPAD_UP", "GAMEPAD_DPAD_RIGHT", "GAMEPAD_DPAD_DOWN", "GAMEPAD_DPAD_LEFT"));
+        elements.put(element("STICK", "CIRCLE", 0.29, 0.77, 0.88, "", "GAMEPAD_LEFT_THUMB_UP", "GAMEPAD_LEFT_THUMB_RIGHT", "GAMEPAD_LEFT_THUMB_DOWN", "GAMEPAD_LEFT_THUMB_LEFT"));
 
-        // Right stick and PlayStation face buttons (Cross=A, Circle=B, Square=X, Triangle=Y).
-        elements.put(element("STICK", "CIRCLE", 0.69, 0.82, 1.12, "", "GAMEPAD_RIGHT_THUMB_UP", "GAMEPAD_RIGHT_THUMB_RIGHT", "GAMEPAD_RIGHT_THUMB_DOWN", "GAMEPAD_RIGHT_THUMB_LEFT"));
-        elements.put(element("BUTTON", "CIRCLE", 0.86, 0.64, 0.92, "□", "GAMEPAD_BUTTON_X"));
-        elements.put(element("BUTTON", "CIRCLE", 0.93, 0.53, 0.92, "△", "GAMEPAD_BUTTON_Y"));
-        elements.put(element("BUTTON", "CIRCLE", 0.93, 0.75, 0.92, "○", "GAMEPAD_BUTTON_B"));
-        elements.put(element("BUTTON", "CIRCLE", 0.95, 0.64, 0.92, "✕", "GAMEPAD_BUTTON_A"));
+        // Right stick and a spaced PlayStation diamond (Cross=A, Circle=B, Square=X, Triangle=Y).
+        elements.put(element("STICK", "CIRCLE", 0.68, 0.77, 0.88, "", "GAMEPAD_RIGHT_THUMB_UP", "GAMEPAD_RIGHT_THUMB_RIGHT", "GAMEPAD_RIGHT_THUMB_DOWN", "GAMEPAD_RIGHT_THUMB_LEFT"));
+        elements.put(element("BUTTON", "CIRCLE", 0.82, 0.67, 0.80, "□", "GAMEPAD_BUTTON_X"));
+        elements.put(element("BUTTON", "CIRCLE", 0.89, 0.56, 0.80, "△", "GAMEPAD_BUTTON_Y"));
+        elements.put(element("BUTTON", "CIRCLE", 0.96, 0.67, 0.80, "○", "GAMEPAD_BUTTON_B"));
+        elements.put(element("BUTTON", "CIRCLE", 0.89, 0.78, 0.80, "✕", "GAMEPAD_BUTTON_A"));
 
-        // Shoulder buttons and center controls.
-        elements.put(element("BUTTON", "ROUND_RECT", 0.10, 0.12, 0.84, "L1", "GAMEPAD_BUTTON_L1"));
-        elements.put(element("BUTTON", "ROUND_RECT", 0.24, 0.12, 0.84, "L2", "GAMEPAD_BUTTON_L2"));
-        elements.put(element("BUTTON", "ROUND_RECT", 0.76, 0.12, 0.84, "R2", "GAMEPAD_BUTTON_R2"));
-        elements.put(element("BUTTON", "ROUND_RECT", 0.90, 0.12, 0.84, "R1", "GAMEPAD_BUTTON_R1"));
-        elements.put(element("BUTTON", "ROUND_RECT", 0.45, 0.91, 0.72, "SELECT", "GAMEPAD_BUTTON_SELECT"));
-        elements.put(element("BUTTON", "ROUND_RECT", 0.55, 0.91, 0.72, "START", "GAMEPAD_BUTTON_START"));
-        elements.put(element("BUTTON", "CIRCLE", 0.36, 0.91, 0.72, "L3", "GAMEPAD_BUTTON_L3"));
-        elements.put(element("BUTTON", "CIRCLE", 0.70, 0.91, 0.72, "R3", "GAMEPAD_BUTTON_R3"));
+        // Shoulder buttons stay on the top edge.
+        elements.put(element("BUTTON", "ROUND_RECT", 0.10, 0.10, 0.72, "L1", "GAMEPAD_BUTTON_L1"));
+        elements.put(element("BUTTON", "ROUND_RECT", 0.25, 0.10, 0.72, "L2", "GAMEPAD_BUTTON_L2"));
+        elements.put(element("BUTTON", "ROUND_RECT", 0.75, 0.10, 0.72, "R2", "GAMEPAD_BUTTON_R2"));
+        elements.put(element("BUTTON", "ROUND_RECT", 0.90, 0.10, 0.72, "R1", "GAMEPAD_BUTTON_R1"));
 
+        // Center/system buttons and stick clicks sit along the bottom edge, away from the sticks.
+        elements.put(element("BUTTON", "ROUND_RECT", 0.45, 0.94, 0.60, "SELECT", "GAMEPAD_BUTTON_SELECT"));
+        elements.put(element("BUTTON", "ROUND_RECT", 0.55, 0.94, 0.60, "START", "GAMEPAD_BUTTON_START"));
+        elements.put(element("BUTTON", "CIRCLE", 0.29, 0.94, 0.72, "L3", "GAMEPAD_BUTTON_L3"));
+        elements.put(element("BUTTON", "CIRCLE", 0.68, 0.94, 0.72, "R3", "GAMEPAD_BUTTON_R3"));
+
+        // Preserve any external-controller mappings from an older profile.
+        if (profileFile.isFile()) {
+            try {
+                JSONObject current = new JSONObject(FileUtils.readString(profileFile));
+                if (current.has("controllers")) data.put("controllers", current.getJSONArray("controllers"));
+            }
+            catch (JSONException ignored) {}
+        }
         data.put("elements", elements);
-        if (!FileUtils.writeString(ControlsProfile.getProfileFile(activity, profile.id), data.toString())) throw new IllegalStateException("Could not save the game controller profile.");
-        return profile.id;
+        if (!FileUtils.writeString(profileFile, data.toString())) throw new IllegalStateException("Could not save the game controller profile.");
     }
 
     private static JSONObject element(String type, String shape, double x, double y, double scale,
