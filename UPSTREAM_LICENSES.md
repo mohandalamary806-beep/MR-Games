@@ -1,11 +1,9 @@
-# Upstream license and notices
+# Upstream licenses and attribution
 
-MR Games' Windows compatibility runtime is built from the open-source Winlator Android application:
+MR Games is a customization layer for the open-source Winlator Android application. The current build workflow checks out `https://github.com/brunodev85/winlator-app` and applies the MR Games launcher files. Preserve upstream license and copyright notices when distributing modified builds.
 
-- Source: https://github.com/brunodev85/winlator-app
-- Main project and release information: https://github.com/brunodev85/winlator
-- Winlator application license: LGPL-2.1 (retain the upstream `LICENSE` file in redistributed bundles).
+The runtime may include or download components with their own licenses, including Wine, Box64 / Box86, Mesa / Turnip, DXVK and VKD3D-Proton. Consult the exact upstream revision and its bundled license files for the authoritative component-by-component notices.
 
-Winlator credits upstream projects including Wine, Box86/Box64, Mesa, DXVK, VKD3D and CNC DDraw. Their own licenses and notices remain applicable. MR Games must not remove or obscure those notices.
+The landscape launcher code in this MR Games update is written for this project. Game artwork is not bundled: when online, the launcher performs best-effort title lookup against the public Steam Store search endpoint and loads a corresponding Steam CDN header image. Artwork remains the property of its respective game publishers.
 
-The GitHub Actions workflow includes the upstream `LICENSE` file and a source-change patch in its build artifact so recipients can inspect the modifications made to the LGPL-covered application source.
+This project is not affiliated with or endorsed by WinHub, GameSir, Steam, Valve, Microsoft, or any game publisher. The UI takes general inspiration from console-style game launchers; it does not include WinHub source code or proprietary assets.
