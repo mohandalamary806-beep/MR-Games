@@ -126,13 +126,13 @@ def patch_app_version(path: Path) -> None:
 
     # The upstream version is bumped once when converting it to this MR Games build.
     # Re-running the patch against the same tree must leave the versionCode unchanged.
-    if name_match.group(2) != "0.5.0":
+    if name_match.group(2) != "1.0.0":
         code_pattern = re.compile(r"(versionCode\s+)([0-9]+)")
         text, count = code_pattern.subn(lambda m: m.group(1) + str(int(m.group(2)) + 1), text, count=1)
         if count != 1:
             raise RuntimeError(f"Could not find versionCode in {path}")
 
-    text, count = name_pattern.subn(r'\g<1>"0.5.0"', text, count=1)
+    text, count = name_pattern.subn(r'\g<1>"1.0.0"', text, count=1)
     if count != 1:
         raise RuntimeError(f"Could not set versionName in {path}")
     path.write_text(text, encoding="utf-8")
@@ -327,35 +327,6 @@ def patch_container_defaults(java_dir: Path) -> None:
         "use MR Games default Box64 profile for new containers")
 
 
-
-def patch_touchscreen_mouse_input(java_dir: Path) -> None:
-    """Enable visible, direct-touch mouse operation while MR gamepad controls are active."""
-    display = java_dir / "XServerDisplayActivity.java"
-    replace_once(
-        display,
-        """        touchpadView.setSensitivity(profile.getCursorSpeed() * globalCursorSpeed);
-        touchpadView.setPointerButtonRightEnabled(false);""",
-        """        touchpadView.setSensitivity(profile.getCursorSpeed() * globalCursorSpeed);
-        boolean isMRPlayStationProfile = profile.getName() != null && profile.getName().startsWith("MR PlayStation - ");
-        if (isMRPlayStationProfile) MRGameLibrary.prepareProfileForLaunch(this, profile);
-        // Blank overlay areas pass touches to TouchpadView. In MR profiles, a finger
-        // moves the Windows cursor to the touched screen point and a tap performs a
-        // left-click, so users can dismiss Windows dialogs and press OK buttons.
-        touchpadView.setMoveCursorToTouchpoint(isMRPlayStationProfile || preferences.getBoolean("move_cursor_to_touchpoint", false));
-        touchpadView.setPointerButtonRightEnabled(false);""",
-        "enable touch-to-mouse and tap-to-click for MR PlayStation profiles"
-    )
-    replace_once(
-        display,
-        """        touchpadView.setSensitivity(globalCursorSpeed);
-        touchpadView.setPointerButtonLeftEnabled(true);""",
-        """        touchpadView.setSensitivity(globalCursorSpeed);
-        touchpadView.setMoveCursorToTouchpoint(preferences.getBoolean("move_cursor_to_touchpoint", false));
-        touchpadView.setPointerButtonLeftEnabled(true);""",
-        "restore the user's normal touchpad cursor mode when controls close"
-    )
-
-
 def verify_gamepad_shortcut_support(java_dir: Path) -> None:
     """Verify the real Winlator shortcut/profile APIs without assuming a hardcoded field.
 
@@ -370,8 +341,6 @@ def verify_gamepad_shortcut_support(java_dir: Path) -> None:
     element_source = (java_dir / "inputcontrols/ControlElement.java").read_text(encoding="utf-8")
     binding_source = (java_dir / "inputcontrols/Binding.java").read_text(encoding="utf-8")
     manager_source = (java_dir / "container/ContainerManager.java").read_text(encoding="utf-8")
-    touchpad_source = (java_dir / "widget/TouchpadView.java").read_text(encoding="utf-8")
-    input_view_source = (java_dir / "widget/InputControlsView.java").read_text(encoding="utf-8")
 
     # Shortcut's [Extra Data] is a generic key/value store, not a fixed schema.
     shortcut_support = all((
@@ -394,20 +363,6 @@ def verify_gamepad_shortcut_support(java_dir: Path) -> None:
     if not launch_support:
         raise RuntimeError(
             "Winlator no longer loads a shortcut's controlsProfile in XServerDisplayActivity"
-        )
-
-    touch_mouse_support = all((
-        "setMoveCursorToTouchpoint" in touchpad_source,
-        "moveCursorToTouchpoint" in touchpad_source,
-        "touchpadView.onTouchEvent(event)" in input_view_source,
-        "setMoveCursorToTouchpoint(isMRPlayStationProfile" in display_source,
-        "MRGameLibrary.prepareProfileForLaunch(this, profile)" in display_source,
-        "isCursorVisible()" in display_source,
-    ))
-    if not touch_mouse_support:
-        raise RuntimeError(
-            "Winlator touchpad no longer supports direct touch-to-cursor and tap-to-click; "
-            "cannot enable mouse interaction safely"
         )
 
     profile_support = all((
@@ -443,6 +398,40 @@ def verify_gamepad_shortcut_support(java_dir: Path) -> None:
         raise RuntimeError("Winlator shortcut library API changed; cannot verify game-library indexing")
 
 
+def patch_manifest(manifest_path: Path) -> None:
+    """Add internet access for optional cover art and landscape launcher orientation."""
+    text = manifest_path.read_text(encoding="utf-8")
+    if 'android.permission.INTERNET' not in text:
+        app_match = re.search(r'(?m)^\s*<application\b', text)
+        if not app_match:
+            raise RuntimeError(f"Could not locate application element in {manifest_path}")
+        indent_match = re.search(r'(?m)^(\s*)<application\b', text)
+        indent = indent_match.group(1) if indent_match else "    "
+        permission = f'{indent}<uses-permission android:name="android.permission.INTERNET" />\n'
+        text = text[:app_match.start()] + permission + text[app_match.start():]
+
+    # Force only the app's launcher shell to landscape; XServerDisplayActivity
+    # remains free to use the game's own orientation.
+    activity_pattern = re.compile(
+        r'<activity\b(?=[^>]*android:name=["\'](?:com\.winlator\.)?MainActivity["\'])[^>]*>',
+        re.DOTALL,
+    )
+    match = activity_pattern.search(text)
+    if not match:
+        raise RuntimeError(f"Could not locate the MainActivity element in {manifest_path}")
+    activity_tag = match.group(0)
+    orientation_pattern = re.compile(r'android:screenOrientation=["\'][^"\']*["\']')
+    if orientation_pattern.search(activity_tag):
+        activity_tag = orientation_pattern.sub('android:screenOrientation="sensorLandscape"', activity_tag, count=1)
+    else:
+        if activity_tag.rstrip().endswith("/>"):
+            activity_tag = activity_tag.rstrip()[:-2] + ' android:screenOrientation="sensorLandscape" />'
+        else:
+            activity_tag = activity_tag[:-1] + ' android:screenOrientation="sensorLandscape">'
+    text = text[:match.start()] + activity_tag + text[match.end():]
+    manifest_path.write_text(text, encoding="utf-8")
+
+
 def apply(source: Path, icon: Path, payload_dir: Path) -> None:
     app = source / "app"
     java = app / "src/main/java/com/winlator"
@@ -452,7 +441,6 @@ def apply(source: Path, icon: Path, payload_dir: Path) -> None:
                 java / "container/Container.java", java / "container/Shortcut.java",
                 java / "inputcontrols/InputControlsManager.java", java / "inputcontrols/ControlsProfile.java",
                 java / "inputcontrols/Binding.java", java / "inputcontrols/ControlElement.java",
-                java / "widget/TouchpadView.java", java / "widget/InputControlsView.java",
                 java / "XServerDisplayActivity.java", java / "core/AppUtils.java", java / "core/FileUtils.java",
                 java / "core/StringUtils.java", java / "core/WineUtils.java", java / "box64/Box64Preset.java",
                 java / "box64/Box64PresetManager.java", res / "values/styles.xml",
@@ -465,8 +453,8 @@ def apply(source: Path, icon: Path, payload_dir: Path) -> None:
     set_app_name(res)
     add_launcher_icon(icon, res)
     apply_blue_theme(res / "values/styles.xml")
+    patch_manifest(app / "src/main/AndroidManifest.xml")
     patch_main_activity(java / "MainActivity.java")
-    patch_touchscreen_mouse_input(java)
     patch_menu(res / "menu/main_menu.xml")
     patch_box64(java)
     patch_container_defaults(java)
@@ -479,13 +467,12 @@ def apply(source: Path, icon: Path, payload_dir: Path) -> None:
     manifest = (app / "src/main/AndroidManifest.xml").read_text(encoding="utf-8")
     if 'android:name="com.winlator.MainActivity"' not in manifest:
         raise RuntimeError("Unexpected launcher activity; cannot safely brand this upstream revision")
-    print("MR Games launcher installed: Home, Library, Windows Desktop / Mod Workshop.")
+    print("MR Games launcher installed: landscape console-style Home, game carousel, Library and Windows Desktop / Mod Workshop.")
+    print("Best-effort Steam cover artwork enabled for matching game titles; offline/unmatched titles use MR placeholders.")
     print("Device-aware defaults installed for new containers (RAM/CPU/Vulkan heuristic).")
     print("Box64 profile aliases installed; per-game overrides remain in the native Shortcut Settings dialog.")
     print("Add Game imports EXE shortcuts with per-game native PlayStation-style virtual gamepad profiles.")
     print("Each imported title is linked to its own touchscreen profile through Winlator shortcut metadata.")
-    print("MR PlayStation profiles show the mouse cursor and support direct touch-to-cursor movement plus tap-to-click.")
-    print("The v2 PlayStation layout keeps controls separated around the screen edges and migrates old generated profiles once.")
     print("No generic FPS cap is applied: the upstream engine does not expose a safe universal per-title limiter.")
 
 
