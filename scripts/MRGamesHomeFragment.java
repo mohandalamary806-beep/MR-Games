@@ -39,8 +39,6 @@ public class MRGamesHomeFragment extends Fragment {
     private static final int WHITE = Color.rgb(238, 247, 255);
     private static final int MUTED = Color.rgb(143, 169, 192);
     private static final int REQUEST_ADD_GAME_EXE = 5104;
-    private static final int REQUEST_ADD_GAME_FOLDER = 5105;
-    private Uri pendingGameExeUri;
 
     private final String[] profileIds = {"AUTO", "LOW", "BALANCED", "QUALITY", "STABILITY"};
     private final String[] profileNames = {"Auto • Recommended", "Low-End • Best effort performance", "Balanced", "High Quality", "Stability"};
@@ -71,9 +69,7 @@ public class MRGamesHomeFragment extends Fragment {
         Context context = requireContext();
         ScrollView scroll = new ScrollView(context);
         scroll.setFillViewport(true);
-        GradientDrawable backdrop = new GradientDrawable(GradientDrawable.Orientation.TL_BR,
-                new int[]{Color.rgb(3, 8, 19), Color.rgb(8, 30, 51), Color.rgb(12, 20, 42), Color.rgb(4, 11, 24)});
-        scroll.setBackground(backdrop);
+        scroll.setBackgroundColor(BG);
         LinearLayout page = new LinearLayout(context);
         page.setOrientation(LinearLayout.VERTICAL);
         page.setPadding(dp(context, 16), dp(context, 18), dp(context, 16), dp(context, 28));
@@ -102,8 +98,7 @@ public class MRGamesHomeFragment extends Fragment {
         LinearLayout labels = new LinearLayout(context);
         labels.setOrientation(LinearLayout.VERTICAL);
         TextView name = text(context, "MR GAMES", 22, WHITE, true);
-        TextView tag = text(context, "WINDOWS GAMING HUB  •  GLASS EDITION", 10, CYAN, true);
-        tag.setLetterSpacing(0.06f);
+        TextView tag = text(context, "WINDOWS GAMING HUB", 10, CYAN, true);
         labels.addView(name);
         labels.addView(tag);
         LinearLayout.LayoutParams labelParams = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
@@ -120,13 +115,10 @@ public class MRGamesHomeFragment extends Fragment {
         LinearLayout content = column(context, 16);
         TextView eyebrow = text(context, "YOUR PC GAMES • ON ANDROID", 10, CYAN, true);
         TextView title = text(context, "Play your Windows games", 22, WHITE, true);
-        TextView subtitle = text(context, "One library for your games, with a separate Windows desktop for installers, files and mods.", 13, MUTED, false);
-        TextView features = text(context, "FULL GAME FOLDER  •  TOUCH GAMEPAD  •  LIVE FPS", 10, CYAN, true);
-        features.setLetterSpacing(0.035f);
+        TextView subtitle = text(context, "Add games without duplicating large folders. Keep the complete game folder in Download or MR Games shared storage.", 13, MUTED, false);
         content.addView(eyebrow);
         content.addView(title);
         content.addView(subtitle);
-        content.addView(features);
         Button addGame = primaryButton(context, "+  ADD GAME (.EXE)");
         addGame.setOnClickListener(v -> chooseGameExe());
         content.addView(addGame);
@@ -234,97 +226,34 @@ public class MRGamesHomeFragment extends Fragment {
     }
 
     private void chooseGameExe() {
-        pendingGameExeUri = null;
         Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
         intent.addCategory(Intent.CATEGORY_OPENABLE);
         intent.setType("*/*");
-        intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION);
-        intent.putExtra(Intent.EXTRA_TITLE, "Choose the game's EXE file");
+        intent.putExtra(Intent.EXTRA_TITLE, "Choose a Windows game EXE");
         try {
             startActivityForResult(intent, REQUEST_ADD_GAME_EXE);
         }
         catch (android.content.ActivityNotFoundException e) {
-            pendingGameExeUri = null;
             Toast.makeText(requireContext(), "No file picker is available on this device", Toast.LENGTH_LONG).show();
         }
-    }
-
-    private void chooseGameFolder() {
-        Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT_TREE);
-        intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION
-                | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION | Intent.FLAG_GRANT_PREFIX_URI_PERMISSION);
-        try {
-            startActivityForResult(intent, REQUEST_ADD_GAME_FOLDER);
-        }
-        catch (android.content.ActivityNotFoundException e) {
-            pendingGameExeUri = null;
-            Toast.makeText(requireContext(), "No folder picker is available on this device", Toast.LENGTH_LONG).show();
-        }
-    }
-
-    private void keepUriPermission(Uri uri, Intent result) {
-        if (uri == null || result == null) return;
-        int flags = result.getFlags() & (Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
-        try {
-            requireContext().getContentResolver().takePersistableUriPermission(uri, flags);
-        }
-        catch (Exception ignored) {}
     }
 
     @Override
     public void onActivityResult(int requestCode, int resultCode, @Nullable Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
-        if (requestCode == REQUEST_ADD_GAME_EXE) {
-            if (resultCode == android.app.Activity.RESULT_OK && data != null && data.getData() != null) {
-                pendingGameExeUri = data.getData();
-                keepUriPermission(pendingGameExeUri, data);
-                importSelectedGame(pendingGameExeUri, null);
-            }
-            else pendingGameExeUri = null;
-            return;
-        }
-        if (requestCode == REQUEST_ADD_GAME_FOLDER) {
-            if (resultCode != android.app.Activity.RESULT_OK || data == null || data.getData() == null) {
-                pendingGameExeUri = null;
-                return;
-            }
-            Uri folderUri = data.getData();
-            keepUriPermission(folderUri, data);
-            Uri exeUri = pendingGameExeUri;
-            if (exeUri == null) {
-                Toast.makeText(requireContext(), "Choose the game's EXE first", Toast.LENGTH_LONG).show();
-                pendingGameExeUri = null;
-                return;
-            }
-            importSelectedGame(exeUri, folderUri);
-        }
-    }
+        if (requestCode != REQUEST_ADD_GAME_EXE || resultCode != android.app.Activity.RESULT_OK || data == null || data.getData() == null) return;
 
-    private void importSelectedGame(Uri exeUri, @Nullable Uri folderUri) {
+        Uri uri = data.getData();
         ProgressDialog progress = new ProgressDialog(requireContext());
         progress.setIndeterminate(true);
         progress.setCancelable(false);
-        progress.setMessage(folderUri == null ? "Checking the EXE and preparing a complete game-folder import..." : "Importing the complete game folder. Large games may take a while...");
+        progress.setMessage("Linking your game from its original folder... No files will be copied.");
         progress.show();
 
-        MRGameLibrary.ImportCallback callback = (shortcut, message, needsGameFolder) -> {
-            try {
-                if (progress.isShowing()) progress.dismiss();
-            }
-            catch (Exception ignored) {}
+        MRGameLibrary.importGame(requireActivity(), uri, (shortcut, message) -> {
+            if (progress.isShowing()) progress.dismiss();
             if (!isAdded()) return;
-            if (needsGameFolder) {
-                pendingGameExeUri = exeUri;
-                new androidx.appcompat.app.AlertDialog.Builder(requireContext())
-                        .setTitle("Select the game folder")
-                        .setMessage("Select the actual folder that contains this game. MR Games will copy its EXE, DLL files, data and subfolders together into its shared game library. Importing only the EXE can cause a black screen or an immediate exit.")
-                        .setNegativeButton("CANCEL", (dialog, which) -> pendingGameExeUri = null)
-                        .setPositiveButton("CHOOSE FOLDER", (dialog, which) -> chooseGameFolder())
-                        .show();
-                return;
-            }
             if (shortcut == null) {
-                pendingGameExeUri = null;
                 new androidx.appcompat.app.AlertDialog.Builder(requireContext())
                         .setTitle("Couldn't add game")
                         .setMessage(message)
@@ -332,17 +261,13 @@ public class MRGamesHomeFragment extends Fragment {
                         .show();
                 return;
             }
-            pendingGameExeUri = null;
             new androidx.appcompat.app.AlertDialog.Builder(requireContext())
                     .setTitle("Game added")
                     .setMessage(message)
                     .setNegativeButton("GAME LIBRARY", (dialog, which) -> openLibrary())
                     .setPositiveButton("PLAY NOW", (dialog, which) -> MRGameLibrary.launchShortcut(requireActivity(), shortcut))
                     .show();
-        };
-
-        if (folderUri != null) MRGameLibrary.importGameFromFolder(requireActivity(), exeUri, folderUri, callback);
-        else MRGameLibrary.importGame(requireActivity(), exeUri, callback);
+        });
     }
 
     private void openLibrary() {
@@ -359,14 +284,12 @@ public class MRGamesHomeFragment extends Fragment {
 
     private MaterialCardView card(Context context, int color, int strokeColor) {
         MaterialCardView card = new MaterialCardView(context);
-        int glassColor = Color.argb(146, Color.red(color), Color.green(color), Color.blue(color));
-        card.setCardBackgroundColor(glassColor);
-        card.setRadius(dp(context, 22));
+        card.setCardBackgroundColor(color);
+        card.setRadius(dp(context, 20));
         card.setStrokeWidth(dp(context, 1));
-        card.setStrokeColor(Color.argb(190, Color.red(strokeColor), Color.green(strokeColor), Color.blue(strokeColor)));
+        card.setStrokeColor(strokeColor);
         card.setUseCompatPadding(true);
-        card.setPreventCornerOverlap(true);
-        card.setCardElevation(dp(context, 13));
+        card.setCardElevation(dp(context, 2));
         return card;
     }
 
@@ -409,13 +332,9 @@ public class MRGamesHomeFragment extends Fragment {
         button.setTextSize(12);
         button.setAllCaps(false);
         button.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
-        GradientDrawable bg = new GradientDrawable(GradientDrawable.Orientation.LEFT_RIGHT,
-                new int[]{Color.argb(190, 0, 83, 143), Color.argb(198, 0, 132, 194), Color.argb(205, 24, 173, 225)});
-        bg.setCornerRadius(dp(context, 16));
-        bg.setStroke(dp(context, 1), Color.argb(205, 176, 235, 255));
+        GradientDrawable bg = new GradientDrawable(GradientDrawable.Orientation.LEFT_RIGHT, new int[]{Color.rgb(0, 109, 184), BLUE, Color.rgb(13, 190, 255)});
+        bg.setCornerRadius(dp(context, 14));
         button.setBackground(bg);
-        button.setElevation(dp(context, 4));
-        button.setPadding(dp(context, 14), 0, dp(context, 14), 0);
         return button;
     }
 
@@ -426,14 +345,11 @@ public class MRGamesHomeFragment extends Fragment {
         button.setTextSize(11);
         button.setAllCaps(false);
         button.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
-        GradientDrawable bg = new GradientDrawable(GradientDrawable.Orientation.LEFT_RIGHT,
-                filled
-                        ? new int[]{Color.argb(188, 0, 112, 187), Color.argb(198, 16, 161, 220)}
-                        : new int[]{Color.argb(120, 26, 57, 83), Color.argb(150, 19, 45, 69)});
-        bg.setCornerRadius(dp(context, 15));
-        bg.setStroke(dp(context, 1), Color.argb(180, 123, 211, 245));
+        GradientDrawable bg = new GradientDrawable();
+        bg.setColor(filled ? BLUE : Color.rgb(13, 36, 55));
+        bg.setCornerRadius(dp(context, 14));
+        bg.setStroke(dp(context, 1), Color.rgb(26, 119, 169));
         button.setBackground(bg);
-        button.setElevation(dp(context, 3));
         return button;
     }
 
