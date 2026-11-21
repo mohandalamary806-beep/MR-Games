@@ -68,6 +68,41 @@ jobs:
             --icon branding/MR_Games_Icon.png \
             --payload scripts
 
+      - name: Fix Gradle repositories and avoid Maven Central rate limits
+        run: |
+          python3 - <<'PYCODE'
+          from pathlib import Path
+
+          build_file = Path('engine-src/build.gradle')
+          if not build_file.is_file():
+              raise SystemExit(f'Expected Gradle build file not found: {build_file}')
+
+          text = build_file.read_text(encoding='utf-8')
+          old_block = """    repositories {
+                  mavenCentral()
+                  google()
+              }"""
+          new_block = """    repositories {
+                  google()
+                  maven {
+                      url 'https://maven-central-eu.storage-download.googleapis.com/maven2/'
+                  }
+                  mavenCentral()
+              }"""
+
+          occurrences = text.count(old_block)
+          if occurrences < 2:
+              raise SystemExit(
+                  'Unexpected upstream build.gradle repository layout: '
+                  f'expected at least 2 Maven Central/google blocks, found {occurrences}. '
+                  'Refusing to continue without verifying repository order.'
+              )
+
+          build_file.write_text(text.replace(old_block, new_block), encoding='utf-8')
+          print(f'Updated {occurrences} repository blocks: Google Maven first, Central mirror second.')
+          PYCODE
+          echo 'Gradle dependency repositories prepared.'
+
       - name: Build Android APK
         working-directory: engine-src
         run: |
