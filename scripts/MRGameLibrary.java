@@ -2,15 +2,12 @@ package com.winlator;
 
 import android.app.Activity;
 import android.content.ContentResolver;
-import android.content.Context;
 import android.content.Intent;
 import android.database.Cursor;
 import android.net.Uri;
 import android.os.Handler;
 import android.os.Looper;
 import android.provider.OpenableColumns;
-
-import androidx.preference.PreferenceManager;
 
 import com.winlator.container.Container;
 import com.winlator.container.ContainerManager;
@@ -26,7 +23,11 @@ import org.json.JSONArray;
 import org.json.JSONException;
 import org.json.JSONObject;
 
+import java.io.BufferedReader;
 import java.io.File;
+import java.io.FileInputStream;
+import java.io.InputStreamReader;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Locale;
 import java.util.concurrent.ExecutorService;
@@ -36,6 +37,7 @@ import java.util.concurrent.Executors;
 public final class MRGameLibrary {
     private static final String RUNTIME_NAME = "MR Games Runtime";
     private static final String PROFILE_PREFIX = "MR PlayStation - ";
+    private static final int PROFILE_LAYOUT_VERSION = 2;
     private static final ExecutorService IO = Executors.newSingleThreadExecutor();
     private static final Handler MAIN = new Handler(Looper.getMainLooper());
 
@@ -195,74 +197,66 @@ public final class MRGameLibrary {
             }
         }
         if (profile == null) profile = controlsManager.createProfile(profileName);
-        prepareProfileForLaunch(activity, profile);
-        return profile.id;
-    }
 
-    /** One-time migration for old MR layouts; already-customized v2 profiles are preserved. */
-    public static void prepareProfileForLaunch(Context context, ControlsProfile profile) {
-        if (context == null || profile == null || profile.getName() == null || !profile.getName().startsWith(PROFILE_PREFIX)) return;
-
-        // MR PlayStation controls must leave the normal mouse path available for Windows dialogs.
-        profile.setDisableMouseInput(false);
-        profile.setHideMouseCursor(false);
-
-        String migrationKey = "mr_games_ps_layout_v2_" + profile.id;
-        android.content.SharedPreferences preferences = PreferenceManager.getDefaultSharedPreferences(context);
-        if (preferences.getBoolean(migrationKey, false)) return;
-
-        try {
-            writePlayStationLayout(context, profile);
-            preferences.edit().putBoolean(migrationKey, true).apply();
+        File profileFile = ControlsProfile.getProfileFile(activity, profile.id);
+        if (profileFile.isFile()) {
+            try {
+                JSONObject previous = new JSONObject(readProfileText(profileFile));
+                if (previous.optInt("mrLayoutVersion", 0) >= PROFILE_LAYOUT_VERSION) {
+                    // Keep any layout customizations made by the player after this version.
+                    return profile.id;
+                }
+            }
+            catch (Exception ignored) {
+                // Regenerate a malformed or older MR profile with the known-good layout.
+            }
         }
-        catch (Exception ignored) {
-            // Keep the profile usable even if migration storage fails; the cursor flags above still apply.
-        }
-    }
 
-    private static void writePlayStationLayout(Context context, ControlsProfile profile) throws JSONException {
-        File profileFile = ControlsProfile.getProfileFile(context, profile.id);
         JSONObject data = new JSONObject();
         data.put("id", profile.id);
-        data.put("name", profile.getName());
+        data.put("name", profileName);
+        data.put("mrLayoutVersion", PROFILE_LAYOUT_VERSION);
         data.put("cursorSpeed", 1.0);
+        // The empty center area remains a mouse surface, so OK / Next dialogs can be tapped.
         data.put("disableMouseInput", false);
         data.put("hideMouseCursor", false);
         JSONArray elements = new JSONArray();
 
-        // Left movement cluster. Controls stay at the screen edges, leaving the center clear.
-        elements.put(element("D_PAD", "CIRCLE", 0.13, 0.72, 0.90, "", "GAMEPAD_DPAD_UP", "GAMEPAD_DPAD_RIGHT", "GAMEPAD_DPAD_DOWN", "GAMEPAD_DPAD_LEFT"));
-        elements.put(element("STICK", "CIRCLE", 0.29, 0.77, 0.88, "", "GAMEPAD_LEFT_THUMB_UP", "GAMEPAD_LEFT_THUMB_RIGHT", "GAMEPAD_LEFT_THUMB_DOWN", "GAMEPAD_LEFT_THUMB_LEFT"));
+        // Left side: D-pad and analog stick, with enough horizontal space between them.
+        elements.put(element("D_PAD", "CIRCLE", 0.115, 0.60, 0.96, "", "GAMEPAD_DPAD_UP", "GAMEPAD_DPAD_RIGHT", "GAMEPAD_DPAD_DOWN", "GAMEPAD_DPAD_LEFT"));
+        elements.put(element("STICK", "CIRCLE", 0.295, 0.79, 0.94, "", "GAMEPAD_LEFT_THUMB_UP", "GAMEPAD_LEFT_THUMB_RIGHT", "GAMEPAD_LEFT_THUMB_DOWN", "GAMEPAD_LEFT_THUMB_LEFT"));
 
-        // Right stick and a spaced PlayStation diamond (Cross=A, Circle=B, Square=X, Triangle=Y).
-        elements.put(element("STICK", "CIRCLE", 0.68, 0.77, 0.88, "", "GAMEPAD_RIGHT_THUMB_UP", "GAMEPAD_RIGHT_THUMB_RIGHT", "GAMEPAD_RIGHT_THUMB_DOWN", "GAMEPAD_RIGHT_THUMB_LEFT"));
-        elements.put(element("BUTTON", "CIRCLE", 0.82, 0.67, 0.80, "□", "GAMEPAD_BUTTON_X"));
-        elements.put(element("BUTTON", "CIRCLE", 0.89, 0.56, 0.80, "△", "GAMEPAD_BUTTON_Y"));
-        elements.put(element("BUTTON", "CIRCLE", 0.96, 0.67, 0.80, "○", "GAMEPAD_BUTTON_B"));
-        elements.put(element("BUTTON", "CIRCLE", 0.89, 0.78, 0.80, "✕", "GAMEPAD_BUTTON_A"));
+        // Right analog stick and PlayStation face buttons form two separate groups.
+        elements.put(element("STICK", "CIRCLE", 0.685, 0.79, 0.94, "", "GAMEPAD_RIGHT_THUMB_UP", "GAMEPAD_RIGHT_THUMB_RIGHT", "GAMEPAD_RIGHT_THUMB_DOWN", "GAMEPAD_RIGHT_THUMB_LEFT"));
+        elements.put(element("BUTTON", "CIRCLE", 0.790, 0.60, 0.78, "□", "GAMEPAD_BUTTON_X"));
+        elements.put(element("BUTTON", "CIRCLE", 0.870, 0.495, 0.78, "△", "GAMEPAD_BUTTON_Y"));
+        elements.put(element("BUTTON", "CIRCLE", 0.950, 0.60, 0.78, "○", "GAMEPAD_BUTTON_B"));
+        elements.put(element("BUTTON", "CIRCLE", 0.870, 0.705, 0.78, "✕", "GAMEPAD_BUTTON_A"));
 
-        // Shoulder buttons stay on the top edge.
-        elements.put(element("BUTTON", "ROUND_RECT", 0.10, 0.10, 0.72, "L1", "GAMEPAD_BUTTON_L1"));
-        elements.put(element("BUTTON", "ROUND_RECT", 0.25, 0.10, 0.72, "L2", "GAMEPAD_BUTTON_L2"));
-        elements.put(element("BUTTON", "ROUND_RECT", 0.75, 0.10, 0.72, "R2", "GAMEPAD_BUTTON_R2"));
-        elements.put(element("BUTTON", "ROUND_RECT", 0.90, 0.10, 0.72, "R1", "GAMEPAD_BUTTON_R1"));
+        // Shoulder row is evenly spaced and does not overlap the D-pad or face buttons.
+        elements.put(element("BUTTON", "ROUND_RECT", 0.105, 0.12, 0.70, "L2", "GAMEPAD_BUTTON_L2"));
+        elements.put(element("BUTTON", "ROUND_RECT", 0.265, 0.12, 0.70, "L1", "GAMEPAD_BUTTON_L1"));
+        elements.put(element("BUTTON", "ROUND_RECT", 0.735, 0.12, 0.70, "R1", "GAMEPAD_BUTTON_R1"));
+        elements.put(element("BUTTON", "ROUND_RECT", 0.895, 0.12, 0.70, "R2", "GAMEPAD_BUTTON_R2"));
 
-        // Center/system buttons and stick clicks sit along the bottom edge, away from the sticks.
-        elements.put(element("BUTTON", "ROUND_RECT", 0.45, 0.94, 0.60, "SELECT", "GAMEPAD_BUTTON_SELECT"));
-        elements.put(element("BUTTON", "ROUND_RECT", 0.55, 0.94, 0.60, "START", "GAMEPAD_BUTTON_START"));
-        elements.put(element("BUTTON", "CIRCLE", 0.29, 0.94, 0.72, "L3", "GAMEPAD_BUTTON_L3"));
-        elements.put(element("BUTTON", "CIRCLE", 0.68, 0.94, 0.72, "R3", "GAMEPAD_BUTTON_R3"));
+        // Bottom-center system buttons are compact and kept clear of both sticks.
+        elements.put(element("BUTTON", "CIRCLE", 0.385, 0.94, 0.58, "L3", "GAMEPAD_BUTTON_L3"));
+        elements.put(element("BUTTON", "ROUND_RECT", 0.455, 0.94, 0.58, "SELECT", "GAMEPAD_BUTTON_SELECT"));
+        elements.put(element("BUTTON", "ROUND_RECT", 0.545, 0.94, 0.58, "START", "GAMEPAD_BUTTON_START"));
+        elements.put(element("BUTTON", "CIRCLE", 0.615, 0.94, 0.58, "R3", "GAMEPAD_BUTTON_R3"));
 
-        // Preserve any external-controller mappings from an older profile.
-        if (profileFile.isFile()) {
-            try {
-                JSONObject current = new JSONObject(FileUtils.readString(profileFile));
-                if (current.has("controllers")) data.put("controllers", current.getJSONArray("controllers"));
-            }
-            catch (JSONException ignored) {}
-        }
         data.put("elements", elements);
         if (!FileUtils.writeString(profileFile, data.toString())) throw new IllegalStateException("Could not save the game controller profile.");
+        return profile.id;
+    }
+
+    private static String readProfileText(File profileFile) throws Exception {
+        StringBuilder result = new StringBuilder();
+        try (BufferedReader reader = new BufferedReader(new InputStreamReader(new FileInputStream(profileFile), StandardCharsets.UTF_8))) {
+            String line;
+            while ((line = reader.readLine()) != null) result.append(line);
+        }
+        return result.toString();
     }
 
     private static JSONObject element(String type, String shape, double x, double y, double scale,
