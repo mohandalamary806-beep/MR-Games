@@ -1,4 +1,4 @@
-name: Build MR Games Windows Engine APK
+name: Build MR Games Landscape Deck APK
 
 on:
   workflow_dispatch:
@@ -8,6 +8,7 @@ on:
       - '.github/workflows/android-apk.yml'
       - 'scripts/**'
       - 'branding/**'
+      - 'docs/**'
       - 'README_AR.md'
       - 'UPSTREAM_LICENSES.md'
 
@@ -16,7 +17,7 @@ permissions:
 
 jobs:
   build:
-    name: Build MR Games (Game Hub + Wine + Box64)
+    name: Build MR Games (Landscape Deck + Winlator runtime)
     runs-on: ubuntu-latest
     timeout-minutes: 180
 
