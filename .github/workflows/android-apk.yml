@@ -9,7 +9,6 @@ on:
       - 'scripts/**'
       - 'branding/**'
       - 'README_AR.md'
-      - 'docs/**'
       - 'UPSTREAM_LICENSES.md'
 
 permissions:
@@ -88,7 +87,7 @@ jobs:
           cp branding/MR_Games_UI_Concept.png release-bundle/
           git -C engine-src add -N app/src/main
           git -C engine-src diff --binary > release-bundle/MR-Games-source-changes.patch
-          printf 'Upstream repository: https://github.com/brunodev85/winlator-app\nUpstream commit: %s\nLauncher: MR Games 0.8.0 glass-style home + native game shortcuts\nGame import: EXE picker + full SAF folder-tree import staged transactionally\nFPS HUD: native Winlator FPS overlay in top-center safe area\nWindows Desktop: existing Winlator containers and file manager\nDevice profiles: RAM/CPU/Vulkan heuristic for new containers\nPer-game settings: native Shortcut Settings (screen size, Box64, driver, DX wrapper, controls)\nAdd Game: Android EXE picker + mandatory full-folder import outside MR Games Library + native shortcut\nTouch controls: per-game MR PlayStation profile (D-pad, dual sticks, face/shoulder buttons)\nDiagnostics: exit-code dialog with View Logs; Logs menu in MR Games sessions; per-game WINEDEBUG=+err\n' "$UPSTREAM_COMMIT" > release-bundle/BUILD-INFO.txt
+          printf 'Upstream repository: https://github.com/brunodev85/winlator-app\nUpstream commit: %s\nLauncher: MR Games Home + existing native game shortcuts\nWindows Desktop: existing Winlator containers and file manager\nDevice profiles: RAM/CPU/Vulkan heuristic for new containers\nPer-game settings: native Shortcut Settings (screen size, Box64, driver, DX wrapper, controls)\nAdd Game: Android EXE picker creates a native per-container shortcut\nTouch controls: per-game MR PlayStation profile (D-pad, dual sticks, face/shoulder buttons)\nLimit: a single-file EXE picker cannot import adjacent game DLL/data files automatically\n' "$UPSTREAM_COMMIT" > release-bundle/BUILD-INFO.txt
 
       - name: Upload MR Games APK
         uses: actions/upload-artifact@v4
