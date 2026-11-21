@@ -62,3 +62,12 @@ The runtime is based on Winlator and its Wine / Box86 / Box64 / Mesa / DXVK / VK
 ## Direct Launch (no duplicate game copy)
 
 MR Games now links supported EXE files to their original game folder instead of copying the EXE or duplicating a large game directory. Select an EXE whose real filesystem path is visible through Winlator's shared drives (normally the phone's Download folder or MR Games shared storage). Keep the complete game folder in place. If Android's file provider does not expose a mapped filesystem path, the app stops with instructions instead of silently copying only the EXE.
+
+
+## Mouse touch + PlayStation layout update
+
+- MR PlayStation profiles keep the Windows mouse enabled and the cursor visible.
+- A touch in an empty area of the control overlay moves the Windows pointer to that point; a short tap also performs a left-click. This allows pressing OK/Next/Install buttons in Windows dialogs without hiding the gamepad.
+- Old MR PlayStation profiles are migrated once to a spaced v2 layout. The migration marker is stored in app preferences, so user-edited v2 positions are not overwritten on every launch.
+- D-pad and both sticks occupy the left/right lower edges; the four face buttons use a separated diamond on the right; shoulder buttons stay at the top; Select/Start and L3/R3 sit along the bottom.
+- If a game uses its own mouse-lock/cursor mode, Windows/game-specific input settings may still affect cursor behavior.
