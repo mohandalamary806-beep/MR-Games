@@ -442,7 +442,7 @@ def patch_termination_diagnostic(java_dir: Path) -> None:
                             : "The Windows game exited with code " + status + ".\\n\\nTry these checks:\\n"
                             + "• Import the complete game folder, including its DLL files and data folders.\\n"
                             + "• Open Game Library → game menu → Settings, then try a lower resolution and the Stability profile.\\n"
-                            + "• Some games need extra Windows runtime components or may not be compatible with this device.\n"
+                            + "• Some games need extra Windows runtime components or may not be compatible with this device.\\n"
                             + "Tap VIEW LOGS to inspect Wine/Box64 messages captured for this session.";
                     try {
                         new AlertDialog.Builder(this)
