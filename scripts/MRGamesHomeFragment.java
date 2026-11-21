@@ -3,17 +3,25 @@ package com.winlator;
 import android.app.ProgressDialog;
 import android.content.Context;
 import android.content.Intent;
-import android.net.Uri;
 import android.content.SharedPreferences;
+import android.graphics.Bitmap;
+import android.graphics.BitmapFactory;
 import android.graphics.Color;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
+import android.net.Uri;
 import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
+import android.text.TextUtils;
+import android.util.TypedValue;
 import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
 import android.widget.ArrayAdapter;
 import android.widget.Button;
+import android.widget.FrameLayout;
+import android.widget.HorizontalScrollView;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
@@ -28,25 +36,63 @@ import androidx.fragment.app.Fragment;
 import androidx.preference.PreferenceManager;
 
 import com.google.android.material.card.MaterialCardView;
+import com.winlator.container.Container;
+import com.winlator.container.ContainerManager;
+import com.winlator.container.Shortcut;
 
-/** MR Games front page. Winlator's native library, containers and desktop remain the runtime backend. */
+import org.json.JSONArray;
+import org.json.JSONObject;
+
+import java.io.BufferedInputStream;
+import java.io.File;
+import java.io.FileOutputStream;
+import java.io.InputStream;
+import java.net.HttpURLConnection;
+import java.net.URL;
+import java.net.URLEncoder;
+import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.Comparator;
+import java.util.Locale;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+
+/**
+ * MR Games landscape launcher. The runtime remains the native Winlator engine;
+ * this screen supplies a console-style horizontal library with best-effort
+ * Steam capsule artwork for shortcuts whose names match Steam catalogue entries.
+ */
 public class MRGamesHomeFragment extends Fragment {
-    private static final int BG = Color.rgb(7, 13, 22);
-    private static final int CARD = Color.rgb(15, 29, 45);
-    private static final int CARD_ALT = Color.rgb(18, 40, 62);
-    private static final int BLUE = Color.rgb(0, 166, 245);
-    private static final int CYAN = Color.rgb(48, 211, 255);
-    private static final int WHITE = Color.rgb(238, 247, 255);
-    private static final int MUTED = Color.rgb(143, 169, 192);
+    private static final int BG = Color.rgb(4, 9, 18);
+    private static final int GLASS = Color.argb(224, 13, 25, 42);
+    private static final int GLASS_ALT = Color.argb(232, 11, 34, 57);
+    private static final int BLUE = Color.rgb(0, 147, 240);
+    private static final int CYAN = Color.rgb(34, 205, 255);
+    private static final int WHITE = Color.rgb(239, 248, 255);
+    private static final int MUTED = Color.rgb(142, 170, 197);
     private static final int REQUEST_ADD_GAME_EXE = 5104;
+    private static final ExecutorService ARTWORK_IO = Executors.newFixedThreadPool(3);
+    private static final Handler MAIN = new Handler(Looper.getMainLooper());
 
     private final String[] profileIds = {"AUTO", "LOW", "BALANCED", "QUALITY", "STABILITY"};
-    private final String[] profileNames = {"Auto • Recommended", "Low-End • Best effort performance", "Balanced", "High Quality", "Stability"};
+    private final String[] profileNames = {"Auto", "Low-End", "Balanced", "High Quality", "Stability"};
     private final String[] resolutionIds = {"AUTO", "640x360", "854x480", "960x544", "1280x720", "1920x1080"};
-    private final String[] resolutionNames = {"Auto by device", "640 × 360", "854 × 480", "960 × 544", "1280 × 720", "1920 × 1080"};
+    private final String[] resolutionNames = {"Auto", "640 × 360", "854 × 480", "960 × 544", "1280 × 720", "1920 × 1080"};
     private Spinner profileSpinner;
     private Spinner resolutionSpinner;
     private TextView recommendationText;
+    private LinearLayout gamesShelf;
+    private TextView gameCountText;
+
+    private static final class GameItem {
+        final Shortcut shortcut;
+        final String title;
+        GameItem(Shortcut shortcut, String title) {
+            this.shortcut = shortcut;
+            this.title = title;
+        }
+    }
 
     @Override
     public void onCreate(@Nullable Bundle savedInstanceState) {
@@ -70,21 +116,53 @@ public class MRGamesHomeFragment extends Fragment {
         ScrollView scroll = new ScrollView(context);
         scroll.setFillViewport(true);
         scroll.setBackgroundColor(BG);
+        scroll.setClipToPadding(false);
+
         LinearLayout page = new LinearLayout(context);
         page.setOrientation(LinearLayout.VERTICAL);
-        page.setPadding(dp(context, 16), dp(context, 18), dp(context, 16), dp(context, 28));
+        page.setPadding(dp(context, 22), dp(context, 14), dp(context, 22), dp(context, 12));
         scroll.addView(page, new ScrollView.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
 
         page.addView(buildHeader(context));
-        page.addView(buildHero(context), margin(context, 0, 16, 0, 14));
-        page.addView(buildDeviceCard(context), margin(context, 0, 0, 0, 14));
-        page.addView(buildPerformanceCard(context), margin(context, 0, 0, 0, 14));
-        page.addView(buildLibraryCard(context), margin(context, 0, 0, 0, 14));
-        page.addView(buildDesktopCard(context), margin(context, 0, 0, 0, 14));
-        page.addView(buildPerGameNote(context));
-        TextView footer = text(context, "MR Games • Windows compatibility powered by Wine / Box64", 11, MUTED, false);
+
+        LinearLayout content = new LinearLayout(context);
+        content.setOrientation(LinearLayout.HORIZONTAL);
+        content.setGravity(Gravity.TOP);
+        LinearLayout.LayoutParams contentParams = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        contentParams.topMargin = dp(context, 14);
+        page.addView(content, contentParams);
+
+        MaterialCardView libraryPanel = glassCard(context, GLASS_ALT, CYAN);
+        LinearLayout libraryContent = column(context, 10);
+        libraryContent.addView(buildLibraryHeading(context));
+        gamesShelf = new LinearLayout(context);
+        gamesShelf.setOrientation(LinearLayout.HORIZONTAL);
+        gamesShelf.setGravity(Gravity.CENTER_VERTICAL);
+        HorizontalScrollView horizontalGames = new HorizontalScrollView(context);
+        horizontalGames.setHorizontalScrollBarEnabled(false);
+        horizontalGames.setFillViewport(false);
+        horizontalGames.addView(gamesShelf, new HorizontalScrollView.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        libraryContent.addView(horizontalGames, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(context, 214)));
+        TextView note = text(context, "Tap a cover to launch • Hold the original game folder in Download or MR Games shared storage", 10, MUTED, false);
+        libraryContent.addView(note);
+        libraryPanel.addView(libraryContent);
+        LinearLayout.LayoutParams libraryParams = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 2.15f);
+        libraryParams.rightMargin = dp(context, 12);
+        content.addView(libraryPanel, libraryParams);
+
+        LinearLayout rightColumn = new LinearLayout(context);
+        rightColumn.setOrientation(LinearLayout.VERTICAL);
+        rightColumn.setLayoutParams(new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        rightColumn.addView(buildDeviceCard(context), margin(context, 0, 0, 0, 10));
+        rightColumn.addView(buildPerformanceCard(context));
+        content.addView(rightColumn);
+
+        page.addView(buildNavigationBar(context), margin(context, 0, 12, 0, 0));
+        TextView footer = text(context, "MR GAMES  •  WINE + BOX64 COMPATIBILITY", 9, MUTED, true);
         footer.setGravity(Gravity.CENTER);
-        page.addView(footer, margin(context, 0, 18, 0, 0));
+        page.addView(footer, margin(context, 0, 8, 0, 0));
+
+        populateGames(context);
         return scroll;
     }
 
@@ -92,124 +170,307 @@ public class MRGamesHomeFragment extends Fragment {
         LinearLayout row = new LinearLayout(context);
         row.setOrientation(LinearLayout.HORIZONTAL);
         row.setGravity(Gravity.CENTER_VERTICAL);
+
         ImageView logo = new ImageView(context);
         logo.setImageResource(R.mipmap.ic_launcher);
+        logo.setScaleType(ImageView.ScaleType.FIT_CENTER);
         row.addView(logo, new LinearLayout.LayoutParams(dp(context, 54), dp(context, 54)));
+
         LinearLayout labels = new LinearLayout(context);
         labels.setOrientation(LinearLayout.VERTICAL);
-        TextView name = text(context, "MR GAMES", 22, WHITE, true);
-        TextView tag = text(context, "WINDOWS GAMING HUB", 10, CYAN, true);
-        labels.addView(name);
-        labels.addView(tag);
-        LinearLayout.LayoutParams labelParams = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
-        labelParams.leftMargin = dp(context, 12);
-        row.addView(labels, labelParams);
-        Button settings = smallButton(context, "⚙", false);
+        labels.setPadding(dp(context, 12), 0, 0, 0);
+        labels.addView(text(context, "MR GAMES", 23, WHITE, true));
+        labels.addView(text(context, "YOUR WINDOWS GAME DECK  •  GLASS EDITION", 10, CYAN, true));
+        row.addView(labels, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+
+        Button add = primaryButton(context, "+  ADD GAME");
+        add.setOnClickListener(v -> chooseGameExe());
+        row.addView(add, new LinearLayout.LayoutParams(dp(context, 142), dp(context, 46)));
+        Button settings = outlineButton(context, "⚙");
         settings.setOnClickListener(v -> openSettings());
-        row.addView(settings, new LinearLayout.LayoutParams(dp(context, 48), dp(context, 44)));
+        LinearLayout.LayoutParams settingsParams = new LinearLayout.LayoutParams(dp(context, 48), dp(context, 46));
+        settingsParams.leftMargin = dp(context, 8);
+        row.addView(settings, settingsParams);
         return row;
     }
 
-    private View buildHero(Context context) {
-        MaterialCardView card = card(context, CARD_ALT, CYAN);
-        LinearLayout content = column(context, 16);
-        TextView eyebrow = text(context, "YOUR PC GAMES • ON ANDROID", 10, CYAN, true);
-        TextView title = text(context, "Play your Windows games", 22, WHITE, true);
-        TextView subtitle = text(context, "Add games without duplicating large folders. Keep the complete game folder in Download or MR Games shared storage.", 13, MUTED, false);
-        content.addView(eyebrow);
-        content.addView(title);
-        content.addView(subtitle);
-        Button addGame = primaryButton(context, "+  ADD GAME (.EXE)");
-        addGame.setOnClickListener(v -> chooseGameExe());
-        content.addView(addGame);
-        Button open = smallButton(context, "OPEN GAME LIBRARY  →", false);
-        open.setOnClickListener(v -> openLibrary());
-        content.addView(open);
-        card.addView(content, new ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
-        return card;
+    private View buildLibraryHeading(Context context) {
+        LinearLayout row = new LinearLayout(context);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        LinearLayout labels = new LinearLayout(context);
+        labels.setOrientation(LinearLayout.VERTICAL);
+        labels.addView(text(context, "MY GAMES", 17, WHITE, true));
+        labels.addView(text(context, "Your installed PC games", 10, MUTED, false));
+        row.addView(labels, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        gameCountText = text(context, "0 GAMES", 10, CYAN, true);
+        row.addView(gameCountText);
+        return row;
     }
 
     private View buildDeviceCard(Context context) {
-        MaterialCardView card = card(context, CARD, BLUE);
-        LinearLayout content = column(context, 8);
-        content.addView(sectionTitle(context, "DEVICE CHECK", "Your phone • Detected locally"));
-        TextView details = text(context, MRGamePerformance.getDeviceSummary(context), 12, MUTED, false);
+        MaterialCardView card = glassCard(context, GLASS, BLUE);
+        LinearLayout content = column(context, 5);
+        content.addView(text(context, "DEVICE STATUS", 12, CYAN, true));
+        TextView details = text(context, MRGamePerformance.getDeviceSummary(context), 10, MUTED, false);
+        details.setMaxLines(4);
+        details.setEllipsize(TextUtils.TruncateAt.END);
         content.addView(details);
-        recommendationText = text(context, "Device recommendation: " + MRGamePerformance.getRecommendedProfileLabel(context) + "  •  starting point only", 12, CYAN, true);
+        recommendationText = text(context, "Recommended: " + MRGamePerformance.getRecommendedProfileLabel(context), 10, WHITE, true);
         content.addView(recommendationText);
         card.addView(content);
         return card;
     }
 
     private View buildPerformanceCard(Context context) {
-        MaterialCardView card = card(context, CARD, BLUE);
-        LinearLayout content = column(context, 10);
-        content.addView(sectionTitle(context, "PERFORMANCE", "Choose defaults for new game containers"));
-        content.addView(text(context, "Device profile", 12, MUTED, true));
+        MaterialCardView card = glassCard(context, GLASS, BLUE);
+        LinearLayout content = column(context, 7);
+        content.addView(text(context, "PERFORMANCE", 13, CYAN, true));
+        content.addView(text(context, "Default profile", 10, MUTED, true));
         profileSpinner = makeSpinner(context, profileNames);
-        content.addView(profileSpinner);
-        content.addView(text(context, "Default resolution", 12, MUTED, true));
+        content.addView(profileSpinner, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(context, 40)));
+        content.addView(text(context, "Resolution", 10, MUTED, true));
         resolutionSpinner = makeSpinner(context, resolutionNames);
-        content.addView(resolutionSpinner);
+        content.addView(resolutionSpinner, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(context, 40)));
+
         SharedPreferences prefs = PreferenceManager.getDefaultSharedPreferences(context);
         selectValue(profileSpinner, prefs.getString("mr_games_profile", "AUTO"), profileIds);
         selectValue(resolutionSpinner, prefs.getString("mr_games_resolution", "AUTO"), resolutionIds);
+
         LinearLayout actions = new LinearLayout(context);
         actions.setOrientation(LinearLayout.HORIZONTAL);
-        Button auto = smallButton(context, "AUTO DETECT", false);
+        Button auto = outlineButton(context, "AUTO");
+        auto.setTextSize(10);
         auto.setOnClickListener(v -> {
             selectValue(profileSpinner, "AUTO", profileIds);
             selectValue(resolutionSpinner, "AUTO", resolutionIds);
             savePerformance(context);
         });
-        Button save = primaryButton(context, "SAVE DEFAULTS");
+        Button save = primaryButton(context, "SAVE");
+        save.setTextSize(10);
         save.setOnClickListener(v -> savePerformance(context));
-        LinearLayout.LayoutParams half = new LinearLayout.LayoutParams(0, dp(context, 46), 1f);
-        half.rightMargin = dp(context, 6);
+        LinearLayout.LayoutParams half = new LinearLayout.LayoutParams(0, dp(context, 38), 1f);
+        half.rightMargin = dp(context, 4);
         actions.addView(auto, half);
-        LinearLayout.LayoutParams half2 = new LinearLayout.LayoutParams(0, dp(context, 46), 1f);
-        half2.leftMargin = dp(context, 6);
+        LinearLayout.LayoutParams half2 = new LinearLayout.LayoutParams(0, dp(context, 38), 1f);
+        half2.leftMargin = dp(context, 4);
         actions.addView(save, half2);
         content.addView(actions);
-        content.addView(text(context, "These choices become defaults for new containers. Existing games keep their own settings.", 11, MUTED, false));
         card.addView(content);
         return card;
     }
 
-    private View buildLibraryCard(Context context) {
-        MaterialCardView card = card(context, CARD, BLUE);
-        LinearLayout content = column(context, 10);
-        content.addView(sectionTitle(context, "MY GAMES", "Your installed Windows shortcuts"));
-        content.addView(text(context, "Open your game shortcuts and launch supported EXE games from the shared Wine / Box64 engine.", 12, MUTED, false));
-        Button library = primaryButton(context, "OPEN GAME LIBRARY  →");
-        library.setOnClickListener(v -> openLibrary());
-        content.addView(library);
-        Button add = primaryButton(context, "+  ADD GAME (.EXE)");
-        add.setOnClickListener(v -> chooseGameExe());
-        content.addView(add);
-        card.addView(content);
+    private View buildNavigationBar(Context context) {
+        LinearLayout bar = new LinearLayout(context);
+        bar.setOrientation(LinearLayout.HORIZONTAL);
+        bar.setGravity(Gravity.CENTER);
+        bar.setPadding(dp(context, 8), dp(context, 5), dp(context, 8), dp(context, 5));
+        GradientDrawable background = rounded(Color.argb(210, 7, 18, 31), Color.argb(130, 0, 150, 220), 20, context);
+        bar.setBackground(background);
+        bar.addView(navItem(context, "⌂", "HOME", true, v -> {}), new LinearLayout.LayoutParams(0, dp(context, 42), 1f));
+        bar.addView(navItem(context, "▦", "LIBRARY", false, v -> openLibrary()), new LinearLayout.LayoutParams(0, dp(context, 42), 1f));
+        bar.addView(navItem(context, "⚙", "SETTINGS", false, v -> openSettings()), new LinearLayout.LayoutParams(0, dp(context, 42), 1f));
+        bar.addView(navItem(context, "▣", "DESKTOP", false, v -> openContainers()), new LinearLayout.LayoutParams(0, dp(context, 42), 1f));
+        return bar;
+    }
+
+    private View navItem(Context context, String icon, String label, boolean selected, View.OnClickListener listener) {
+        LinearLayout item = new LinearLayout(context);
+        item.setOrientation(LinearLayout.HORIZONTAL);
+        item.setGravity(Gravity.CENTER);
+        TextView mark = text(context, icon, 20, selected ? CYAN : MUTED, true);
+        item.addView(mark);
+        TextView name = text(context, label, 10, selected ? CYAN : WHITE, true);
+        LinearLayout.LayoutParams nameParams = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        nameParams.leftMargin = dp(context, 6);
+        item.addView(name, nameParams);
+        item.setOnClickListener(listener);
+        return item;
+    }
+
+    private void populateGames(Context context) {
+        if (gamesShelf == null) return;
+        gamesShelf.removeAllViews();
+        ArrayList<GameItem> games = readGameShortcuts(context);
+        if (gameCountText != null) gameCountText.setText(games.size() + (games.size() == 1 ? " GAME" : " GAMES"));
+        if (games.isEmpty()) {
+            MaterialCardView empty = glassCard(context, Color.argb(130, 8, 26, 44), Color.rgb(39, 103, 145));
+            empty.setLayoutParams(new LinearLayout.LayoutParams(dp(context, 230), dp(context, 182)));
+            LinearLayout content = column(context, 8);
+            TextView plus = text(context, "+", 40, CYAN, true);
+            plus.setGravity(Gravity.CENTER);
+            content.addView(plus, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(context, 70)));
+            TextView title = text(context, "YOUR LIBRARY IS EMPTY", 12, WHITE, true);
+            title.setGravity(Gravity.CENTER);
+            content.addView(title);
+            Button add = primaryButton(context, "ADD YOUR FIRST GAME");
+            add.setOnClickListener(v -> chooseGameExe());
+            content.addView(add, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(context, 38)));
+            empty.addView(content);
+            gamesShelf.addView(empty);
+            return;
+        }
+
+        for (GameItem game : games) {
+            gamesShelf.addView(buildGameTile(context, game), new LinearLayout.LayoutParams(dp(context, 218), dp(context, 184)));
+        }
+    }
+
+    private ArrayList<GameItem> readGameShortcuts(Context context) {
+        ArrayList<GameItem> result = new ArrayList<>();
+        try {
+            ContainerManager manager = new ContainerManager(context);
+            for (Container container : manager.getContainers()) {
+                File desktop = new File(container.getUserDir(), "Desktop");
+                File[] files = desktop.listFiles((dir, name) -> name.toLowerCase(Locale.ENGLISH).endsWith(".desktop"));
+                if (files == null) continue;
+                for (File file : files) {
+                    String name = readDesktopName(file);
+                    if (name == null || name.trim().isEmpty()) name = file.getName().replaceFirst("(?i)\\.desktop$", "");
+                    if (!name.trim().isEmpty()) {
+                        result.add(new GameItem(new Shortcut(container, file), name.trim()));
+                    }
+                }
+            }
+        }
+        catch (Exception ignored) {}
+        Collections.sort(result, new Comparator<GameItem>() {
+            @Override public int compare(GameItem first, GameItem second) {
+                return first.title.compareToIgnoreCase(second.title);
+            }
+        });
+        return result;
+    }
+
+    private String readDesktopName(File file) {
+        try (java.io.BufferedReader reader = new java.io.BufferedReader(new java.io.InputStreamReader(new java.io.FileInputStream(file), StandardCharsets.UTF_8))) {
+            String line;
+            while ((line = reader.readLine()) != null) {
+                if (line.startsWith("Name=")) return line.substring(5).trim();
+            }
+        }
+        catch (Exception ignored) {}
+        return null;
+    }
+
+    private View buildGameTile(Context context, GameItem game) {
+        MaterialCardView card = glassCard(context, Color.argb(220, 8, 21, 36), Color.argb(190, 31, 137, 194));
+        card.setRadius(dp(context, 16));
+        card.setCardElevation(dp(context, 4));
+        card.setClickable(true);
+        card.setFocusable(true);
+        LinearLayout body = new LinearLayout(context);
+        body.setOrientation(LinearLayout.VERTICAL);
+
+        FrameLayout artworkFrame = new FrameLayout(context);
+        GradientDrawable placeholder = new GradientDrawable(GradientDrawable.Orientation.TL_BR,
+                new int[]{accentFor(game.title), Color.rgb(4, 16, 31), Color.rgb(5, 36, 59)});
+        ImageView artwork = new ImageView(context);
+        artwork.setScaleType(ImageView.ScaleType.CENTER_CROP);
+        artwork.setBackground(placeholder);
+        artwork.setContentDescription(game.title + " cover art");
+        artworkFrame.addView(artwork, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+        TextView fallback = text(context, initials(game.title), 28, Color.WHITE, true);
+        fallback.setGravity(Gravity.CENTER);
+        artworkFrame.addView(fallback, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+        body.addView(artworkFrame, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(context, 128)));
+        loadSteamArtwork(context, game.title, artwork, fallback);
+
+        LinearLayout meta = new LinearLayout(context);
+        meta.setOrientation(LinearLayout.HORIZONTAL);
+        meta.setGravity(Gravity.CENTER_VERTICAL);
+        meta.setPadding(dp(context, 10), dp(context, 5), dp(context, 10), dp(context, 5));
+        TextView title = text(context, game.title, 12, WHITE, true);
+        title.setMaxLines(1);
+        title.setEllipsize(TextUtils.TruncateAt.END);
+        meta.addView(title, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        TextView play = text(context, "▶ PLAY", 10, CYAN, true);
+        meta.addView(play);
+        body.addView(meta, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(context, 44)));
+        card.addView(body);
+        card.setOnClickListener(v -> MRGameLibrary.launchShortcut(requireActivity(), game.shortcut));
         return card;
     }
 
-    private View buildDesktopCard(Context context) {
-        MaterialCardView card = card(context, CARD, CYAN);
-        LinearLayout content = column(context, 10);
-        content.addView(sectionTitle(context, "WINDOWS DESKTOP & MOD WORKSHOP", "Keep the Windows environment for modding"));
-        content.addView(text(context, "Open a container to use the Windows desktop. Use its file manager to browse game folders, install tools, copy mods and back up files.", 12, MUTED, false));
-        Button desktop = primaryButton(context, "OPEN WINDOWS DESKTOP  →");
-        desktop.setOnClickListener(v -> openContainers());
-        content.addView(desktop);
-        card.addView(content);
-        return card;
+    private void loadSteamArtwork(Context context, String title, ImageView image, TextView fallback) {
+        File cacheDir = new File(context.getCacheDir(), "mr_game_covers");
+        String cacheName = Integer.toHexString(title.toLowerCase(Locale.ENGLISH).hashCode()) + ".jpg";
+        File cached = new File(cacheDir, cacheName);
+        image.setTag(title);
+        if (cached.isFile() && cached.length() > 1024) {
+            Bitmap bitmap = BitmapFactory.decodeFile(cached.getAbsolutePath());
+            if (bitmap != null) {
+                image.setImageBitmap(bitmap);
+                fallback.setVisibility(View.GONE);
+                return;
+            }
+        }
+
+        ARTWORK_IO.execute(() -> {
+            Bitmap bitmap = null;
+            try {
+                String query = URLEncoder.encode(title, "UTF-8");
+                URL searchUrl = new URL("https://store.steampowered.com/api/storesearch/?term=" + query + "&l=english&cc=us");
+                HttpURLConnection search = (HttpURLConnection)searchUrl.openConnection();
+                search.setConnectTimeout(4500);
+                search.setReadTimeout(4500);
+                search.setRequestProperty("User-Agent", "MR-Games-Android/1.0");
+                int id = 0;
+                try (InputStream stream = new BufferedInputStream(search.getInputStream())) {
+                    byte[] bytes = readAll(stream);
+                    JSONObject json = new JSONObject(new String(bytes, StandardCharsets.UTF_8));
+                    JSONArray items = json.optJSONArray("items");
+                    if (items != null && items.length() > 0) id = items.getJSONObject(0).optInt("id", 0);
+                }
+                finally { search.disconnect(); }
+                if (id > 0) {
+                    URL coverUrl = new URL("https://cdn.cloudflare.steamstatic.com/steam/apps/" + id + "/header.jpg");
+                    HttpURLConnection cover = (HttpURLConnection)coverUrl.openConnection();
+                    cover.setConnectTimeout(4500);
+                    cover.setReadTimeout(4500);
+                    cover.setRequestProperty("User-Agent", "MR-Games-Android/1.0");
+                    try (InputStream stream = new BufferedInputStream(cover.getInputStream())) {
+                        bitmap = BitmapFactory.decodeStream(stream);
+                    }
+                    finally { cover.disconnect(); }
+                }
+                if (bitmap != null) {
+                    if (!cacheDir.exists()) cacheDir.mkdirs();
+                    try (FileOutputStream output = new FileOutputStream(cached)) {
+                        bitmap.compress(Bitmap.CompressFormat.JPEG, 88, output);
+                    }
+                }
+            }
+            catch (Exception ignored) {}
+
+            final Bitmap result = bitmap;
+            if (result != null) MAIN.post(() -> {
+                if (title.equals(image.getTag())) {
+                    image.setImageBitmap(result);
+                    fallback.setVisibility(View.GONE);
+                }
+            });
+        });
     }
 
-    private View buildPerGameNote(Context context) {
-        MaterialCardView card = card(context, Color.rgb(10, 24, 38), Color.rgb(35, 89, 128));
-        LinearLayout content = column(context, 6);
-        content.addView(text(context, "PER-GAME SETTINGS", 13, CYAN, true));
-        content.addView(text(context, "In Game Library, tap a game's ⋮ menu → Settings to set its own resolution, Box64 profile, graphics driver, DirectX wrapper and controls. Those overrides are stored for that game.", 11, MUTED, false));
-        card.addView(content);
-        return card;
+    private byte[] readAll(InputStream stream) throws Exception {
+        java.io.ByteArrayOutputStream output = new java.io.ByteArrayOutputStream();
+        byte[] buffer = new byte[8192];
+        int count;
+        while ((count = stream.read(buffer)) != -1) output.write(buffer, 0, count);
+        return output.toByteArray();
+    }
+
+    private int accentFor(String title) {
+        int[] accents = {Color.rgb(0, 116, 190), Color.rgb(31, 79, 148), Color.rgb(0, 132, 142), Color.rgb(73, 59, 151), Color.rgb(25, 93, 127)};
+        return accents[Math.floorMod(title.hashCode(), accents.length)];
+    }
+
+    private String initials(String value) {
+        String[] parts = value.trim().split("\\s+");
+        if (parts.length == 0) return "MR";
+        if (parts.length == 1) return parts[0].substring(0, Math.min(2, parts[0].length())).toUpperCase(Locale.ENGLISH);
+        return (parts[0].substring(0, 1) + parts[1].substring(0, 1)).toUpperCase(Locale.ENGLISH);
     }
 
     private void savePerformance(Context context) {
@@ -221,8 +482,8 @@ public class MRGamesHomeFragment extends Fragment {
                 .putString("mr_games_profile", profile)
                 .putString("mr_games_resolution", resolution)
                 .apply();
-        recommendationText.setText("Active defaults: " + MRGamePerformance.getProfileLabel(context) + "  •  " + MRGamePerformance.getDefaultScreenSize(context));
-        Toast.makeText(context, "MR Games defaults saved for new containers", Toast.LENGTH_LONG).show();
+        recommendationText.setText("Saved: " + MRGamePerformance.getProfileLabel(context));
+        Toast.makeText(context, "MR Games defaults saved", Toast.LENGTH_SHORT).show();
     }
 
     private void chooseGameExe() {
@@ -230,9 +491,7 @@ public class MRGamesHomeFragment extends Fragment {
         intent.addCategory(Intent.CATEGORY_OPENABLE);
         intent.setType("*/*");
         intent.putExtra(Intent.EXTRA_TITLE, "Choose a Windows game EXE");
-        try {
-            startActivityForResult(intent, REQUEST_ADD_GAME_EXE);
-        }
+        try { startActivityForResult(intent, REQUEST_ADD_GAME_EXE); }
         catch (android.content.ActivityNotFoundException e) {
             Toast.makeText(requireContext(), "No file picker is available on this device", Toast.LENGTH_LONG).show();
         }
@@ -247,7 +506,7 @@ public class MRGamesHomeFragment extends Fragment {
         ProgressDialog progress = new ProgressDialog(requireContext());
         progress.setIndeterminate(true);
         progress.setCancelable(false);
-        progress.setMessage("Linking your game from its original folder... No files will be copied.");
+        progress.setMessage("Adding game to your library...");
         progress.show();
 
         MRGameLibrary.importGame(requireActivity(), uri, (shortcut, message) -> {
@@ -255,70 +514,53 @@ public class MRGamesHomeFragment extends Fragment {
             if (!isAdded()) return;
             if (shortcut == null) {
                 new androidx.appcompat.app.AlertDialog.Builder(requireContext())
-                        .setTitle("Couldn't add game")
-                        .setMessage(message)
-                        .setPositiveButton("OK", null)
-                        .show();
+                        .setTitle("Couldn't add game").setMessage(message).setPositiveButton("OK", null).show();
                 return;
             }
             new androidx.appcompat.app.AlertDialog.Builder(requireContext())
                     .setTitle("Game added")
                     .setMessage(message)
-                    .setNegativeButton("GAME LIBRARY", (dialog, which) -> openLibrary())
+                    .setNegativeButton("LIBRARY", (dialog, which) -> openLibrary())
+                    .setNeutralButton("ADD MORE", (dialog, which) -> chooseGameExe())
                     .setPositiveButton("PLAY NOW", (dialog, which) -> MRGameLibrary.launchShortcut(requireActivity(), shortcut))
                     .show();
+            MAIN.postDelayed(() -> { if (isAdded()) populateGames(requireContext()); }, 350);
         });
     }
 
     private void openLibrary() {
         if (getActivity() instanceof MainActivity) ((MainActivity)getActivity()).showFragment(new ShortcutsFragment());
     }
-
     private void openContainers() {
         if (getActivity() instanceof MainActivity) ((MainActivity)getActivity()).showFragment(new ContainersFragment());
     }
-
     private void openSettings() {
         if (getActivity() instanceof MainActivity) ((MainActivity)getActivity()).showFragment(new SettingsFragment());
     }
 
-    private MaterialCardView card(Context context, int color, int strokeColor) {
+    private MaterialCardView glassCard(Context context, int color, int strokeColor) {
         MaterialCardView card = new MaterialCardView(context);
         card.setCardBackgroundColor(color);
-        card.setRadius(dp(context, 20));
+        card.setRadius(dp(context, 22));
         card.setStrokeWidth(dp(context, 1));
         card.setStrokeColor(strokeColor);
         card.setUseCompatPadding(true);
-        card.setCardElevation(dp(context, 2));
+        card.setCardElevation(dp(context, 3));
+        card.setPreventCornerOverlap(true);
         return card;
     }
 
     private LinearLayout column(Context context, int spacingDp) {
         LinearLayout layout = new LinearLayout(context);
         layout.setOrientation(LinearLayout.VERTICAL);
-        layout.setPadding(dp(context, 16), dp(context, 16), dp(context, 16), dp(context, 16));
-        GradientDrawable divider = new GradientDrawable();
-        divider.setColor(Color.TRANSPARENT);
-        divider.setSize(1, dp(context, spacingDp));
-        layout.setDividerDrawable(divider);
-        layout.setShowDividers(LinearLayout.SHOW_DIVIDER_MIDDLE);
+        layout.setPadding(dp(context, 14), dp(context, 13), dp(context, 14), dp(context, 13));
         return layout;
-    }
-
-    private LinearLayout sectionTitle(Context context, String title, String subtitle) {
-        LinearLayout block = new LinearLayout(context);
-        block.setOrientation(LinearLayout.VERTICAL);
-        TextView titleView = text(context, title, 15, WHITE, true);
-        TextView subtitleView = text(context, subtitle, 11, MUTED, false);
-        block.addView(titleView);
-        block.addView(subtitleView);
-        return block;
     }
 
     private TextView text(Context context, String value, int sizeSp, int color, boolean bold) {
         TextView view = new TextView(context);
         view.setText(value);
-        view.setTextSize(sizeSp);
+        view.setTextSize(TypedValue.COMPLEX_UNIT_SP, sizeSp);
         view.setTextColor(color);
         if (bold) view.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
         view.setGravity(Gravity.CENTER_VERTICAL);
@@ -332,25 +574,31 @@ public class MRGamesHomeFragment extends Fragment {
         button.setTextSize(12);
         button.setAllCaps(false);
         button.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
-        GradientDrawable bg = new GradientDrawable(GradientDrawable.Orientation.LEFT_RIGHT, new int[]{Color.rgb(0, 109, 184), BLUE, Color.rgb(13, 190, 255)});
-        bg.setCornerRadius(dp(context, 14));
+        GradientDrawable bg = new GradientDrawable(GradientDrawable.Orientation.LEFT_RIGHT,
+                new int[]{Color.rgb(0, 91, 166), BLUE, Color.rgb(0, 190, 248)});
+        bg.setCornerRadius(dp(context, 15));
+        bg.setStroke(dp(context, 1), Color.argb(190, 80, 220, 255));
         button.setBackground(bg);
         return button;
     }
 
-    private Button smallButton(Context context, String label, boolean filled) {
+    private Button outlineButton(Context context, String label) {
         Button button = new Button(context);
         button.setText(label);
-        button.setTextColor(filled ? Color.WHITE : CYAN);
-        button.setTextSize(11);
+        button.setTextColor(CYAN);
+        button.setTextSize(12);
         button.setAllCaps(false);
         button.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
-        GradientDrawable bg = new GradientDrawable();
-        bg.setColor(filled ? BLUE : Color.rgb(13, 36, 55));
-        bg.setCornerRadius(dp(context, 14));
-        bg.setStroke(dp(context, 1), Color.rgb(26, 119, 169));
-        button.setBackground(bg);
+        button.setBackground(rounded(Color.argb(155, 7, 24, 42), Color.argb(185, 30, 149, 197), 15, context));
         return button;
+    }
+
+    private GradientDrawable rounded(int color, int strokeColor, int radius, Context context) {
+        GradientDrawable drawable = new GradientDrawable();
+        drawable.setColor(color);
+        drawable.setCornerRadius(dp(context, radius));
+        drawable.setStroke(dp(context, 1), strokeColor);
+        return drawable;
     }
 
     private Spinner makeSpinner(Context context, String[] values) {
@@ -362,12 +610,7 @@ public class MRGamesHomeFragment extends Fragment {
     }
 
     private void selectValue(Spinner spinner, String value, String[] ids) {
-        for (int i = 0; i < ids.length; i++) {
-            if (ids[i].equals(value)) {
-                spinner.setSelection(i);
-                return;
-            }
-        }
+        for (int i = 0; i < ids.length; i++) if (ids[i].equals(value)) { spinner.setSelection(i); return; }
         spinner.setSelection(0);
     }
 
