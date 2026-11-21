@@ -14,6 +14,7 @@ from pathlib import Path
 from PIL import Image, ImageOps
 
 DENSITIES = {"ldpi": 36, "mdpi": 48, "hdpi": 72, "xhdpi": 96, "xxhdpi": 144, "xxxhdpi": 192}
+TARGET_VERSION = "0.8.0"
 
 
 def replace_once(path: Path, old: str, new: str, label: str) -> None:
@@ -104,7 +105,35 @@ def apply_blue_theme(styles_file: Path) -> None:
     for style_name, items in palettes.items():
         for item_name, value in items.items():
             text = update_style(text, style_name, item_name, value)
+
+    # Tint Winlator's native panels, toolbars, popups and dialogs with translucent
+    # navy/cyan surfaces so the glass language carries beyond the launcher screen.
+    glass_items = {
+        "popupMenuBackground": "@drawable/mr_games_glass_dialog",
+        "toolboxBackground": "@drawable/mr_games_glass_toolbox",
+        "panelBackground": "@drawable/mr_games_glass_panel",
+        "preloaderBackground": "@drawable/mr_games_glass_dialog",
+    }
+    for item_name, value in glass_items.items():
+        text = update_style(text, "AppThemeDark", item_name, value)
+
     styles_file.write_text(text, encoding="utf-8")
+    drawable_dir = styles_file.parent.parent / "drawable"
+    drawable_dir.mkdir(parents=True, exist_ok=True)
+    glass_drawables = {
+        "mr_games_glass_panel.xml": ("#C9172B43", "#7758D9FF", "18dp"),
+        "mr_games_glass_dialog.xml": ("#E10A1A2B", "#A84AC9F2", "20dp"),
+        "mr_games_glass_toolbox.xml": ("#B80B1D32", "#8058D9FF", "16dp"),
+    }
+    for filename, (fill, stroke, radius) in glass_drawables.items():
+        (drawable_dir / filename).write_text(
+            '<?xml version="1.0" encoding="utf-8"?>\n'
+            '<shape xmlns:android="http://schemas.android.com/apk/res/android" android:shape="rectangle">\n'
+            f'    <solid android:color="{fill}" />\n'
+            f'    <corners android:radius="{radius}" />\n'
+            f'    <stroke android:width="1dp" android:color="{stroke}" />\n'
+            '    <padding android:left="5dp" android:top="4dp" android:right="5dp" android:bottom="4dp" />\n'
+            '</shape>\n', encoding="utf-8")
 
 
 def write_java_files(java_dir: Path, payload_dir: Path) -> None:
@@ -126,13 +155,13 @@ def patch_app_version(path: Path) -> None:
 
     # The upstream version is bumped once when converting it to this MR Games build.
     # Re-running the patch against the same tree must leave the versionCode unchanged.
-    if name_match.group(2) != "0.5.0":
+    if name_match.group(2) != TARGET_VERSION:
         code_pattern = re.compile(r"(versionCode\s+)([0-9]+)")
         text, count = code_pattern.subn(lambda m: m.group(1) + str(int(m.group(2)) + 1), text, count=1)
         if count != 1:
             raise RuntimeError(f"Could not find versionCode in {path}")
 
-    text, count = name_pattern.subn(r'\g<1>"0.5.0"', text, count=1)
+    text, count = name_pattern.subn(lambda m: m.group(1) + '"' + TARGET_VERSION + '"', text, count=1)
     if count != 1:
         raise RuntimeError(f"Could not set versionName in {path}")
     path.write_text(text, encoding="utf-8")
@@ -327,6 +356,119 @@ def patch_container_defaults(java_dir: Path) -> None:
         "use MR Games default Box64 profile for new containers")
 
 
+def patch_fps_overlay(java_dir: Path, res_dir: Path) -> None:
+    """Enable Winlator's native FPS HUD for MR Games shortcuts and place it above the controls."""
+    display = java_dir / "XServerDisplayActivity.java"
+    text = display.read_text(encoding="utf-8")
+    old_guard = 'if (container != null && container.getHUDMode() != FrameRating.Mode.DISABLED.ordinal()) {'
+    new_guard = 'boolean mrGamesShowFPS = shortcut != null && "1".equals(shortcut.getExtra("mrGamesShowFPS", "0"));\n        if (container != null && (container.getHUDMode() != FrameRating.Mode.DISABLED.ordinal() || mrGamesShowFPS)) {'
+    if "boolean mrGamesShowFPS" not in text:
+        count = text.count(old_guard)
+        if count != 1:
+            raise RuntimeError(f"Could not locate the native FrameRating creation guard in {display}; found {count}.")
+        text = text.replace(old_guard, new_guard, 1)
+
+    old_mode = 'frameRating.setMode(FrameRating.Mode.values()[container.getHUDMode()]);'
+    new_mode = 'frameRating.setMode(container.getHUDMode() == FrameRating.Mode.DISABLED.ordinal()\n                    ? FrameRating.Mode.SIMPLE : FrameRating.Mode.values()[container.getHUDMode()]);'
+    if new_mode not in text:
+        if text.count(old_mode) != 1:
+            raise RuntimeError(f"Could not locate the native FrameRating mode assignment in {display}.")
+        text = text.replace(old_mode, new_mode, 1)
+    display.write_text(text, encoding="utf-8")
+
+    # Move the native FPS widget from the upper-left edge to the top-center gap
+    # between the shoulder buttons of the MR PlayStation control layout.
+    layout = res_dir / "layout" / "frame_rating.xml"
+    if not layout.is_file():
+        raise FileNotFoundError(f"Winlator native FPS layout not found: {layout}")
+    import xml.etree.ElementTree as ET
+    android = "{http://schemas.android.com/apk/res/android}"
+    tree = ET.parse(layout)
+    root = tree.getroot()
+    if len(root) == 0:
+        raise RuntimeError("Winlator frame_rating.xml has no FPS panel container")
+    panel = root[0]
+    panel.set(android + "layout_gravity", "top|center_horizontal")
+    panel.set(android + "layout_marginTop", "12dp")
+    panel.set(android + "layout_marginLeft", "0dp")
+    panel.set(android + "padding", "9dp")
+    panel.set(android + "background", "@drawable/mr_games_hud_glass")
+    for view in panel.iter():
+        if view.tag == "TextView":
+            view.set(android + "textSize", "13sp")
+            view.set(android + "textStyle", "bold")
+            view.set(android + "textColor", "#EAF8FF" if view.get(android + "text", "").strip() == "0" else "#62DFFF")
+    tree.write(layout, encoding="utf-8", xml_declaration=True)
+
+    drawable_dir = res_dir / "drawable"
+    drawable_dir.mkdir(parents=True, exist_ok=True)
+    (drawable_dir / "mr_games_hud_glass.xml").write_text("""<?xml version="1.0" encoding="utf-8"?>
+<shape xmlns:android="http://schemas.android.com/apk/res/android" android:shape="rectangle">
+    <solid android:color="#C9172B43" />
+    <corners android:radius="13dp" />
+    <stroke android:width="1dp" android:color="#887BE4FF" />
+    <padding android:left="3dp" android:top="2dp" android:right="3dp" android:bottom="2dp" />
+</shape>
+""", encoding="utf-8")
+
+
+
+def patch_termination_diagnostic(java_dir: Path) -> None:
+    'Keep MR Games from silently disappearing when a Windows process exits.'
+    display = java_dir / "XServerDisplayActivity.java"
+    text = display.read_text(encoding="utf-8")
+    import_line = "import androidx.appcompat.app.AlertDialog;"
+    if import_line not in text:
+        anchor = "import androidx.appcompat.app.AppCompatActivity;"
+        if anchor not in text:
+            raise RuntimeError(f"Could not locate AppCompatActivity import in {display}")
+        text = text.replace(anchor, import_line + "\n" + anchor, 1)
+
+    old_logs = 'boolean enableLogs = preferences.getBoolean("enable_wine_debug", false) || preferences.getInt("box64_logs", 0) >= 1;'
+    new_logs = 'boolean enableLogs = preferences.getBoolean("enable_wine_debug", false) || preferences.getInt("box64_logs", 0) >= 1 || getIntent().getBooleanExtra("mr_games_session", false);'
+    if new_logs not in text:
+        if text.count(old_logs) != 1:
+            raise RuntimeError(f"Could not locate Winlator debug-log setup in {display}.")
+        text = text.replace(old_logs, new_logs, 1)
+
+    old_callback = "guestProgramLauncherComponent.setTerminationCallback((status) -> exit());"
+    new_callback = '''guestProgramLauncherComponent.setTerminationCallback((status) -> {
+            if (shortcut != null && "1".equals(shortcut.getExtra("mrGamesShowFPS", "0"))) {
+                runOnUiThread(() -> {
+                    if (isFinishing()) return;
+                    String title = status == 0 ? "Game session ended" : "Game stopped unexpectedly";
+                    String message = status == 0
+                            ? "The Windows game process has ended. You can return to MR Games and choose another title."
+                            : "The Windows game exited with code " + status + ".\\n\\nTry these checks:\\n"
+                            + "• Import the complete game folder, including its DLL files and data folders.\\n"
+                            + "• Open Game Library → game menu → Settings, then try a lower resolution and the Stability profile.\\n"
+                            + "• Some games need extra Windows runtime components or may not be compatible with this device.\n"
+                            + "Tap VIEW LOGS to inspect Wine/Box64 messages captured for this session.";
+                    try {
+                        new AlertDialog.Builder(this)
+                                .setTitle(title)
+                                .setMessage(message)
+                                .setCancelable(false)
+                                .setNeutralButton("VIEW LOGS", (dialog, which) -> {
+                                    if (debugDialog != null) debugDialog.show();
+                                })
+                                .setPositiveButton("RETURN TO MR GAMES", (dialog, which) -> exit())
+                                .show();
+                    }
+                    catch (Exception error) {
+                        exit();
+                    }
+                });
+            }
+            else exit();
+        });'''
+    if new_callback not in text:
+        count = text.count(old_callback)
+        if count != 1:
+            raise RuntimeError(f"Could not locate the game-process termination callback in {display}; found {count}.")
+        text = text.replace(old_callback, new_callback, 1)
+    display.write_text(text, encoding="utf-8")
+
 def verify_gamepad_shortcut_support(java_dir: Path) -> None:
     """Verify the real Winlator shortcut/profile APIs without assuming a hardcoded field.
 
@@ -397,6 +539,13 @@ def verify_gamepad_shortcut_support(java_dir: Path) -> None:
     if not re.search(r'public\s+ArrayList<Shortcut>\s+loadShortcuts\(Shortcut\s+selectedFolder\)', manager_source):
         raise RuntimeError("Winlator shortcut library API changed; cannot verify game-library indexing")
 
+    if 'shortcut.getExtra("mrGamesShowFPS", "0")' not in display_source or "FrameRating.Mode.SIMPLE" not in display_source:
+        raise RuntimeError("Winlator native FPS overlay could not be enabled for MR Games shortcuts")
+    if "Game stopped unexpectedly" not in display_source or "RETURN TO MR GAMES" not in display_source or "VIEW LOGS" not in display_source:
+        raise RuntimeError("MR Games game-exit diagnostic dialog was not installed")
+    if 'getBooleanExtra("mr_games_session", false)' not in display_source:
+        raise RuntimeError("MR Games Wine/Box64 diagnostic logging was not enabled for game sessions")
+
 
 def apply(source: Path, icon: Path, payload_dir: Path) -> None:
     app = source / "app"
@@ -410,7 +559,8 @@ def apply(source: Path, icon: Path, payload_dir: Path) -> None:
                 java / "XServerDisplayActivity.java", java / "core/AppUtils.java", java / "core/FileUtils.java",
                 java / "core/StringUtils.java", java / "core/WineUtils.java", java / "box64/Box64Preset.java",
                 java / "box64/Box64PresetManager.java", res / "values/styles.xml",
-                res / "menu/main_menu.xml", app / "src/main/AndroidManifest.xml", icon]
+                res / "menu/main_menu.xml", res / "layout/frame_rating.xml",
+                app / "src/main/AndroidManifest.xml", icon]
     for p in required:
         if not p.exists():
             raise FileNotFoundError(f"Required upstream file missing: {p}")
@@ -423,6 +573,8 @@ def apply(source: Path, icon: Path, payload_dir: Path) -> None:
     patch_menu(res / "menu/main_menu.xml")
     patch_box64(java)
     patch_container_defaults(java)
+    patch_fps_overlay(java, res)
+    patch_termination_diagnostic(java)
 
     # Validate the actual generic [Extra Data] contract and native profile loader.
     # `controlsProfile` is stored as a generic key, so it is not expected to be
@@ -437,7 +589,8 @@ def apply(source: Path, icon: Path, payload_dir: Path) -> None:
     print("Box64 profile aliases installed; per-game overrides remain in the native Shortcut Settings dialog.")
     print("Add Game imports EXE shortcuts with per-game native PlayStation-style virtual gamepad profiles.")
     print("Each imported title is linked to its own touchscreen profile through Winlator shortcut metadata.")
-    print("No generic FPS cap is applied: the upstream engine does not expose a safe universal per-title limiter.")
+    print("The native FPS HUD is enabled per MR Games shortcut and positioned at the top-center safe area.")
+    print("Unexpected game exits show a diagnostic dialog instead of silently closing the session.")
 
 
 def main() -> int:
