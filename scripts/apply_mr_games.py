@@ -327,6 +327,35 @@ def patch_container_defaults(java_dir: Path) -> None:
         "use MR Games default Box64 profile for new containers")
 
 
+
+def patch_touchscreen_mouse_input(java_dir: Path) -> None:
+    """Enable visible, direct-touch mouse operation while MR gamepad controls are active."""
+    display = java_dir / "XServerDisplayActivity.java"
+    replace_once(
+        display,
+        """        touchpadView.setSensitivity(profile.getCursorSpeed() * globalCursorSpeed);
+        touchpadView.setPointerButtonRightEnabled(false);""",
+        """        touchpadView.setSensitivity(profile.getCursorSpeed() * globalCursorSpeed);
+        boolean isMRPlayStationProfile = profile.getName() != null && profile.getName().startsWith("MR PlayStation - ");
+        if (isMRPlayStationProfile) MRGameLibrary.prepareProfileForLaunch(this, profile);
+        // Blank overlay areas pass touches to TouchpadView. In MR profiles, a finger
+        // moves the Windows cursor to the touched screen point and a tap performs a
+        // left-click, so users can dismiss Windows dialogs and press OK buttons.
+        touchpadView.setMoveCursorToTouchpoint(isMRPlayStationProfile || preferences.getBoolean("move_cursor_to_touchpoint", false));
+        touchpadView.setPointerButtonRightEnabled(false);""",
+        "enable touch-to-mouse and tap-to-click for MR PlayStation profiles"
+    )
+    replace_once(
+        display,
+        """        touchpadView.setSensitivity(globalCursorSpeed);
+        touchpadView.setPointerButtonLeftEnabled(true);""",
+        """        touchpadView.setSensitivity(globalCursorSpeed);
+        touchpadView.setMoveCursorToTouchpoint(preferences.getBoolean("move_cursor_to_touchpoint", false));
+        touchpadView.setPointerButtonLeftEnabled(true);""",
+        "restore the user's normal touchpad cursor mode when controls close"
+    )
+
+
 def verify_gamepad_shortcut_support(java_dir: Path) -> None:
     """Verify the real Winlator shortcut/profile APIs without assuming a hardcoded field.
 
@@ -341,6 +370,8 @@ def verify_gamepad_shortcut_support(java_dir: Path) -> None:
     element_source = (java_dir / "inputcontrols/ControlElement.java").read_text(encoding="utf-8")
     binding_source = (java_dir / "inputcontrols/Binding.java").read_text(encoding="utf-8")
     manager_source = (java_dir / "container/ContainerManager.java").read_text(encoding="utf-8")
+    touchpad_source = (java_dir / "widget/TouchpadView.java").read_text(encoding="utf-8")
+    input_view_source = (java_dir / "widget/InputControlsView.java").read_text(encoding="utf-8")
 
     # Shortcut's [Extra Data] is a generic key/value store, not a fixed schema.
     shortcut_support = all((
@@ -363,6 +394,20 @@ def verify_gamepad_shortcut_support(java_dir: Path) -> None:
     if not launch_support:
         raise RuntimeError(
             "Winlator no longer loads a shortcut's controlsProfile in XServerDisplayActivity"
+        )
+
+    touch_mouse_support = all((
+        "setMoveCursorToTouchpoint" in touchpad_source,
+        "moveCursorToTouchpoint" in touchpad_source,
+        "touchpadView.onTouchEvent(event)" in input_view_source,
+        "setMoveCursorToTouchpoint(isMRPlayStationProfile" in display_source,
+        "MRGameLibrary.prepareProfileForLaunch(this, profile)" in display_source,
+        "isCursorVisible()" in display_source,
+    ))
+    if not touch_mouse_support:
+        raise RuntimeError(
+            "Winlator touchpad no longer supports direct touch-to-cursor and tap-to-click; "
+            "cannot enable mouse interaction safely"
         )
 
     profile_support = all((
@@ -407,6 +452,7 @@ def apply(source: Path, icon: Path, payload_dir: Path) -> None:
                 java / "container/Container.java", java / "container/Shortcut.java",
                 java / "inputcontrols/InputControlsManager.java", java / "inputcontrols/ControlsProfile.java",
                 java / "inputcontrols/Binding.java", java / "inputcontrols/ControlElement.java",
+                java / "widget/TouchpadView.java", java / "widget/InputControlsView.java",
                 java / "XServerDisplayActivity.java", java / "core/AppUtils.java", java / "core/FileUtils.java",
                 java / "core/StringUtils.java", java / "core/WineUtils.java", java / "box64/Box64Preset.java",
                 java / "box64/Box64PresetManager.java", res / "values/styles.xml",
@@ -420,6 +466,7 @@ def apply(source: Path, icon: Path, payload_dir: Path) -> None:
     add_launcher_icon(icon, res)
     apply_blue_theme(res / "values/styles.xml")
     patch_main_activity(java / "MainActivity.java")
+    patch_touchscreen_mouse_input(java)
     patch_menu(res / "menu/main_menu.xml")
     patch_box64(java)
     patch_container_defaults(java)
@@ -437,6 +484,8 @@ def apply(source: Path, icon: Path, payload_dir: Path) -> None:
     print("Box64 profile aliases installed; per-game overrides remain in the native Shortcut Settings dialog.")
     print("Add Game imports EXE shortcuts with per-game native PlayStation-style virtual gamepad profiles.")
     print("Each imported title is linked to its own touchscreen profile through Winlator shortcut metadata.")
+    print("MR PlayStation profiles show the mouse cursor and support direct touch-to-cursor movement plus tap-to-click.")
+    print("The v2 PlayStation layout keeps controls separated around the screen edges and migrates old generated profiles once.")
     print("No generic FPS cap is applied: the upstream engine does not expose a safe universal per-title limiter.")
 
 
